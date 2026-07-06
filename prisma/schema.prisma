@@ -1,34 +1,218 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+model Shop {
+  id        String   @id @default(cuid())
+  shop      String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products      Product[]
+  items         SerializedItem[]
+  orders        ProductionOrder[]
+  orderLines    ProductionOrderLine[]
+  importBatches ImportBatch[]
+  webhookEvents WebhookEvent[]
+  auditLogs     AuditLog[]
+}
+
+model Product {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  sku      String
+  name     String
+  category String?
+  notes    String?
+  active   Boolean @default(true)
+
+  shopifyProductGid   String?
+  shopifyVariantGid   String?
+  shopifyTitle        String?
+  shopifyVariantTitle String?
+  imageUrl            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items      SerializedItem[]
+  orderLines ProductionOrderLine[]
+
+  @@unique([shopId, sku])
+  @@index([shopId, name])
+}
+
+model SerializedItem {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  serialNumber String
+  sourceType   ItemSourceType @default(STOCK)
+  status       ItemStatus     @default(PLANNED)
+
+  orderNumber           String?
+  productionOrderLineId String?
+  productionOrderLine   ProductionOrderLine? @relation(fields: [productionOrderLineId], references: [id], onDelete: SetNull)
+
+  madeBy      String?
+  qcBy        String?
+  qcAt        DateTime?
+  completedAt DateTime?
+  notes       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shopId, serialNumber])
+  @@index([shopId, status])
+  @@index([shopId, orderNumber])
+  @@index([productId])
+}
+
+model ProductionOrder {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  shopifyOrderGid String?
+  orderNumber     String
+  status          ProductionOrderStatus @default(OPEN)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines ProductionOrderLine[]
+
+  @@unique([shopId, orderNumber])
+  @@index([shopId, status])
+}
+
+model ProductionOrderLine {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  productionOrderId String
+  productionOrder   ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  shopifyLineItemGid String?
+  sku                String?
+  productName        String
+  quantity           Int
+  customProperties   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items SerializedItem[]
+
+  @@unique([productionOrderId, shopifyLineItemGid])
+  @@index([shopId, sku])
+}
+
+model ImportBatch {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  filename    String
+  totalRows   Int
+  successRows Int
+  failedRows  Int
+  errors      Json?
+
+  createdAt DateTime @default(now())
+}
+
+model WebhookEvent {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  webhookId   String
+  topic       String
+  payload     Json
+  processedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, webhookId])
+  @@index([shopId, topic])
+}
+
+model AuditLog {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  action   String
+  entity   String
+  entityId String?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+}
+
+enum ItemSourceType {
+  STOCK
+  SHOPIFY_ORDER
+  MANUAL
+  IMPORT
+}
+
+enum ItemStatus {
+  PLANNED
+  IN_PRODUCTION
+  CUTTING
+  SEWING
+  ASSEMBLY
+  QC
+  READY
+  IN_STOCK
+  RESERVED
+  SHIPPED
+  SCRAPPED
+}
+
+enum ProductionOrderStatus {
+  OPEN
+  IN_PROGRESS
+  PARTIALLY_DONE
+  DONE
+  CANCELLED
 }

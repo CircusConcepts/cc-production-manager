@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: cc-production-manager-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ccpm
+      POSTGRES_PASSWORD: ccpm_password
+      POSTGRES_DB: ccpm_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - ccpm_pgdata:/var/lib/postgresql/data
+
+volumes:
+  ccpm_pgdata:

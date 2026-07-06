@@ -21,9 +21,9 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>CircusConcepts Production Manager</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Internal production, stock, and order management for CircusConcepts.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -39,16 +39,16 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Serialized inventory</strong>. Track individual physical
+            items by serial number.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Stock tracking</strong>. Count in-stock items from
+            serialized inventory — no stored quantity fields.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Read-only Shopify</strong>. Reads products from Shopify;
+            all writes stay in your database.
           </li>
         </ul>
       </div>
