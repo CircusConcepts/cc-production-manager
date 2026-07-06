@@ -2,7 +2,7 @@
 
 client_id = "97b078161ea0de92beeac6fd1ed01de0"
 name = "cc-production-manager"
-application_url = "https://example.com"
+application_url = "https://cc-production-manager.onrender.com"
 embedded = true
 
 [build]
@@ -24,4 +24,4 @@ api_version = "2026-10"
 scopes = "read_products"
 
 [auth]
-redirect_urls = [ "https://example.com/auth/callback" ]
+redirect_urls = [ "https://cc-production-manager.onrender.com/auth/callback" ]
