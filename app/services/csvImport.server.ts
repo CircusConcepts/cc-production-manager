@@ -1,0 +1,694 @@
+import type { ItemStatus } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
+import { isValid, parse, parseISO } from "date-fns";
+import { parse as parseCsv } from "csv-parse/sync";
+import { z } from "zod";
+
+import db from "../db.server";
+import { createAuditLog } from "./audit.server";
+
+export type ImportMode = "skip" | "update" | "fail";
+
+export interface ImportRowError {
+  rowNumber: number;
+  sku?: string;
+  serialNumber?: string;
+  message: string;
+}
+
+export interface ImportRowSkipped {
+  rowNumber: number;
+  sku?: string;
+  serialNumber?: string;
+  reason: string;
+}
+
+export interface ImportSummary {
+  totalRows: number;
+  importedRows: number;
+  updatedRows: number;
+  skippedRows: number;
+  failedRows: number;
+  errors: ImportRowError[];
+  skipped: ImportRowSkipped[];
+  importBatchId: string;
+}
+
+interface NormalizedCsvRow {
+  rowNumber: number;
+  sku: string;
+  productName?: string;
+  serialNumber: string;
+  orderNumber?: string;
+  productionDate?: string;
+  madeBy?: string;
+  status?: string;
+  notes?: string;
+}
+
+interface ValidatedRow extends NormalizedCsvRow {
+  resolvedStatus: ItemStatus;
+  completedAt: Date | null;
+}
+
+const importModeSchema = z.enum(["skip", "update", "fail"]);
+
+const SKU_HEADERS = [
+  "sku",
+  "product sku",
+  "item sku",
+  "code",
+  "product code",
+];
+
+const NAME_HEADERS = [
+  "name",
+  "product name",
+  "item name",
+  "description",
+  "product description",
+];
+
+const SERIAL_HEADERS = [
+  "serial number",
+  "serial",
+  "serial no",
+  "serial no.",
+  "serial #",
+  "serial number unique",
+];
+
+const ORDER_HEADERS = [
+  "order number",
+  "order",
+  "order no",
+  "order no.",
+  "order #",
+  "shopify order",
+  "customer order",
+];
+
+const DATE_HEADERS = [
+  "production date",
+  "made date",
+  "completed date",
+  "date",
+  "created date",
+];
+
+const EMPLOYEE_HEADERS = [
+  "employee",
+  "made by",
+  "maker",
+  "produced by",
+  "operator",
+  "worker",
+  "staff",
+];
+
+const STATUS_HEADERS = ["status", "item status", "production status"];
+
+const NOTES_HEADERS = ["notes", "note", "comment", "comments", "remarks"];
+
+const STATUS_MAP: Record<string, ItemStatus> = {
+  planned: "PLANNED",
+  "in production": "IN_PRODUCTION",
+  production: "IN_PRODUCTION",
+  cutting: "CUTTING",
+  sewing: "SEWING",
+  assembly: "ASSEMBLY",
+  assembling: "ASSEMBLY",
+  qc: "QC",
+  "quality control": "QC",
+  ready: "READY",
+  completed: "READY",
+  complete: "READY",
+  done: "READY",
+  "in stock": "IN_STOCK",
+  stock: "IN_STOCK",
+  stocked: "IN_STOCK",
+  reserved: "RESERVED",
+  shipped: "SHIPPED",
+  delivered: "SHIPPED",
+  scrap: "SCRAPPED",
+  scrapped: "SCRAPPED",
+};
+
+const DATE_FORMATS = ["yyyy-MM-dd", "MM/dd/yyyy", "dd/MM/yyyy", "yyyy/MM/dd"];
+
+const CHUNK_SIZE = 500;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+export function normalizeHeader(header: string): string {
+  return header
+    .toLowerCase()
+    .trim()
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function buildNormalizedRecord(
+  raw: Record<string, string | undefined>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === undefined || value === null) continue;
+    const trimmed = String(value).trim();
+    if (!trimmed) continue;
+    result[normalizeHeader(key)] = trimmed;
+  }
+
+  return result;
+}
+
+export function getValueByPossibleHeaders(
+  record: Record<string, string>,
+  possibleHeaders: string[],
+): string | undefined {
+  for (const header of possibleHeaders) {
+    const value = record[normalizeHeader(header)];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+export function normalizeStatus(
+  value: string | undefined,
+): { status?: ItemStatus; error?: string } {
+  if (!value) return {};
+
+  const key = value.toLowerCase().trim().replace(/\s+/g, " ");
+  const mapped = STATUS_MAP[key];
+
+  if (!mapped) {
+    return { error: `Unknown status "${value}".` };
+  }
+
+  return { status: mapped };
+}
+
+export function parseProductionDate(
+  value: string | undefined,
+): { date: Date | null; error?: string } {
+  if (!value) return { date: null };
+
+  const trimmed = value.trim();
+  if (!trimmed) return { date: null };
+
+  const isoParsed = parseISO(trimmed);
+  if (isValid(isoParsed)) return { date: isoParsed };
+
+  const native = new Date(trimmed);
+  if (!Number.isNaN(native.getTime()) && trimmed.includes("-")) {
+    return { date: native };
+  }
+
+  for (const format of DATE_FORMATS) {
+    const parsed = parse(trimmed, format, new Date());
+    if (isValid(parsed)) return { date: parsed };
+  }
+
+  return { date: null, error: `Could not parse date "${value}".` };
+}
+
+function resolveDefaultStatus(
+  orderNumber: string | undefined,
+  status?: ItemStatus,
+): ItemStatus {
+  if (status) return status;
+  if (orderNumber) return "SHIPPED";
+  return "IN_STOCK";
+}
+
+function normalizeRawRow(
+  raw: Record<string, string | undefined>,
+  rowNumber: number,
+): NormalizedCsvRow | null {
+  const record = buildNormalizedRecord(raw);
+
+  if (Object.keys(record).length === 0) return null;
+
+  const sku = getValueByPossibleHeaders(record, SKU_HEADERS);
+  const serialNumber = getValueByPossibleHeaders(record, SERIAL_HEADERS);
+
+  return {
+    rowNumber,
+    sku: sku ?? "",
+    productName: getValueByPossibleHeaders(record, NAME_HEADERS),
+    serialNumber: serialNumber ?? "",
+    orderNumber: getValueByPossibleHeaders(record, ORDER_HEADERS),
+    productionDate: getValueByPossibleHeaders(record, DATE_HEADERS),
+    madeBy: getValueByPossibleHeaders(record, EMPLOYEE_HEADERS),
+    status: getValueByPossibleHeaders(record, STATUS_HEADERS),
+    notes: getValueByPossibleHeaders(record, NOTES_HEADERS),
+  };
+}
+
+export function detectDuplicateSerialNumbersWithinFile(
+  rows: NormalizedCsvRow[],
+): ImportRowError[] {
+  const seen = new Map<string, number>();
+  const errors: ImportRowError[] = [];
+
+  for (const row of rows) {
+    if (!row.serialNumber) continue;
+
+    const key = row.serialNumber.toLowerCase();
+    const firstRow = seen.get(key);
+
+    if (firstRow !== undefined) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        sku: row.sku,
+        serialNumber: row.serialNumber,
+        message: `Duplicate serial number in file (first seen on row ${firstRow}).`,
+      });
+    } else {
+      seen.set(key, row.rowNumber);
+    }
+  }
+
+  return errors;
+}
+
+export function validateRows(rows: NormalizedCsvRow[]): {
+  validRows: ValidatedRow[];
+  errors: ImportRowError[];
+} {
+  const errors: ImportRowError[] = [];
+  const validRows: ValidatedRow[] = [];
+
+  for (const row of rows) {
+    if (!row.sku) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        serialNumber: row.serialNumber || undefined,
+        message: "SKU is required.",
+      });
+      continue;
+    }
+
+    if (!row.serialNumber) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        sku: row.sku,
+        message: "Serial number is required.",
+      });
+      continue;
+    }
+
+    const statusResult = normalizeStatus(row.status);
+    if (statusResult.error) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        sku: row.sku,
+        serialNumber: row.serialNumber,
+        message: statusResult.error,
+      });
+      continue;
+    }
+
+    const dateResult = parseProductionDate(row.productionDate);
+    if (dateResult.error) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        sku: row.sku,
+        serialNumber: row.serialNumber,
+        message: dateResult.error,
+      });
+      continue;
+    }
+
+    validRows.push({
+      ...row,
+      resolvedStatus: resolveDefaultStatus(row.orderNumber, statusResult.status),
+      completedAt: dateResult.date,
+    });
+  }
+
+  return { validRows, errors };
+}
+
+async function ensureProduct(
+  shopId: string,
+  sku: string,
+  productName?: string,
+): Promise<{ id: string; created: boolean }> {
+  const existing = await db.product.findUnique({
+    where: { shopId_sku: { shopId, sku } },
+  });
+
+  if (existing) {
+    const shouldUpdateName =
+      productName &&
+      productName !== sku &&
+      (!existing.name || existing.name === existing.sku);
+
+    if (shouldUpdateName) {
+      await db.product.update({
+        where: { id: existing.id },
+        data: { name: productName },
+      });
+    }
+
+    return { id: existing.id, created: false };
+  }
+
+  const product = await db.product.create({
+    data: {
+      shopId,
+      sku,
+      name: productName || sku,
+      active: true,
+    },
+  });
+
+  await createAuditLog({
+    shopId,
+    action: "PRODUCT_CREATED_FROM_IMPORT",
+    entity: "Product",
+    entityId: product.id,
+    metadata: { sku, name: product.name },
+  });
+
+  return { id: product.id, created: true };
+}
+
+async function processChunk({
+  shopId,
+  rows,
+  importMode,
+  existingSerials,
+}: {
+  shopId: string;
+  rows: ValidatedRow[];
+  importMode: ImportMode;
+  existingSerials: Map<string, { id: string; productId: string }>;
+}): Promise<{
+  importedRows: number;
+  updatedRows: number;
+  skippedRows: number;
+  failedRows: number;
+  errors: ImportRowError[];
+  skipped: ImportRowSkipped[];
+  auditEntries: Prisma.AuditLogCreateManyInput[];
+}> {
+  let importedRows = 0;
+  let updatedRows = 0;
+  let skippedRows = 0;
+  let failedRows = 0;
+  const errors: ImportRowError[] = [];
+  const skipped: ImportRowSkipped[] = [];
+  const auditEntries: Prisma.AuditLogCreateManyInput[] = [];
+
+  for (const row of rows) {
+    try {
+      const product = await ensureProduct(shopId, row.sku, row.productName);
+      const existing = existingSerials.get(row.serialNumber);
+
+      if (!existing) {
+        const item = await db.serializedItem.create({
+          data: {
+            shopId,
+            productId: product.id,
+            serialNumber: row.serialNumber,
+            sourceType: "IMPORT",
+            status: row.resolvedStatus,
+            orderNumber: row.orderNumber ?? null,
+            madeBy: row.madeBy ?? null,
+            completedAt: row.completedAt,
+            notes: row.notes ?? null,
+          },
+        });
+
+        existingSerials.set(row.serialNumber, {
+          id: item.id,
+          productId: product.id,
+        });
+
+        importedRows += 1;
+        auditEntries.push({
+          shopId,
+          action: "SERIALIZED_ITEM_CREATED_FROM_IMPORT",
+          entity: "SerializedItem",
+          entityId: item.id,
+          metadata: {
+            rowNumber: row.rowNumber,
+            sku: row.sku,
+            serialNumber: row.serialNumber,
+          },
+        });
+        continue;
+      }
+
+      if (importMode === "skip") {
+        skippedRows += 1;
+        skipped.push({
+          rowNumber: row.rowNumber,
+          sku: row.sku,
+          serialNumber: row.serialNumber,
+          reason: "Serial number already exists.",
+        });
+        auditEntries.push({
+          shopId,
+          action: "SERIALIZED_ITEM_SKIPPED_DUPLICATE_IMPORT",
+          entity: "SerializedItem",
+          entityId: existing.id,
+          metadata: {
+            rowNumber: row.rowNumber,
+            sku: row.sku,
+            serialNumber: row.serialNumber,
+          },
+        });
+        continue;
+      }
+
+      if (importMode === "fail") {
+        failedRows += 1;
+        errors.push({
+          rowNumber: row.rowNumber,
+          sku: row.sku,
+          serialNumber: row.serialNumber,
+          message: "Serial number already exists.",
+        });
+        continue;
+      }
+
+      await db.serializedItem.update({
+        where: { id: existing.id },
+        data: {
+          productId: product.id,
+          orderNumber: row.orderNumber ?? null,
+          madeBy: row.madeBy ?? null,
+          completedAt: row.completedAt,
+          notes: row.notes ?? null,
+          status: row.resolvedStatus,
+        },
+      });
+
+      updatedRows += 1;
+      auditEntries.push({
+        shopId,
+        action: "SERIALIZED_ITEM_UPDATED_FROM_IMPORT",
+        entity: "SerializedItem",
+        entityId: existing.id,
+        metadata: {
+          rowNumber: row.rowNumber,
+          sku: row.sku,
+          serialNumber: row.serialNumber,
+        },
+      });
+    } catch {
+      failedRows += 1;
+      errors.push({
+        rowNumber: row.rowNumber,
+        sku: row.sku,
+        serialNumber: row.serialNumber,
+        message: "Could not save this row. Please check the data and try again.",
+      });
+    }
+  }
+
+  return {
+    importedRows,
+    updatedRows,
+    skippedRows,
+    failedRows,
+    errors,
+    skipped,
+    auditEntries,
+  };
+}
+
+export async function importHistoricalCsv({
+  shopId,
+  filename,
+  fileText,
+  importMode,
+}: {
+  shopId: string;
+  filename: string;
+  fileText: string;
+  importMode: ImportMode;
+}): Promise<ImportSummary> {
+  const parsedMode = importModeSchema.safeParse(importMode);
+  if (!parsedMode.success) {
+    throw new Error("Invalid import mode.");
+  }
+
+  let records: Record<string, string | undefined>[];
+
+  try {
+    records = parseCsv(fileText, {
+      columns: true,
+      skip_empty_lines: true,
+      bom: true,
+      trim: true,
+      relax_column_count: true,
+    }) as Record<string, string | undefined>[];
+  } catch {
+    throw new Error("Could not read the CSV file. Check the format and try again.");
+  }
+
+  const normalizedRows: NormalizedCsvRow[] = [];
+
+  records.forEach((record, index) => {
+    const row = normalizeRawRow(record, index + 2);
+    if (row) normalizedRows.push(row);
+  });
+
+  const duplicateErrors = detectDuplicateSerialNumbersWithinFile(normalizedRows);
+  const duplicateRowNumbers = new Set(duplicateErrors.map((e) => e.rowNumber));
+
+  const rowsWithoutFileDuplicates = normalizedRows.filter(
+    (row) => !duplicateRowNumbers.has(row.rowNumber),
+  );
+
+  const { validRows, errors: validationErrors } = validateRows(
+    rowsWithoutFileDuplicates,
+  );
+
+  const allErrors: ImportRowError[] = [...duplicateErrors, ...validationErrors];
+
+  const serialNumbers = validRows.map((row) => row.serialNumber);
+  const existingItems = await db.serializedItem.findMany({
+    where: { shopId, serialNumber: { in: serialNumbers } },
+    select: { id: true, serialNumber: true, productId: true },
+  });
+
+  const existingSerials = new Map(
+    existingItems.map((item) => [
+      item.serialNumber,
+      { id: item.id, productId: item.productId },
+    ]),
+  );
+
+  let importedRows = 0;
+  let updatedRows = 0;
+  let skippedRows = 0;
+  let failedRows = allErrors.length;
+  const skipped: ImportRowSkipped[] = [];
+  const auditEntries: Prisma.AuditLogCreateManyInput[] = [];
+
+  for (let i = 0; i < validRows.length; i += CHUNK_SIZE) {
+    const chunk = validRows.slice(i, i + CHUNK_SIZE);
+    const result = await processChunk({
+      shopId,
+      rows: chunk,
+      importMode: parsedMode.data,
+      existingSerials,
+    });
+
+    importedRows += result.importedRows;
+    updatedRows += result.updatedRows;
+    skippedRows += result.skippedRows;
+    failedRows += result.failedRows;
+    allErrors.push(...result.errors);
+    skipped.push(...result.skipped);
+    auditEntries.push(...result.auditEntries);
+  }
+
+  const totalRows = normalizedRows.length;
+  const successRows = importedRows + updatedRows;
+
+  const importBatch = await db.importBatch.create({
+    data: {
+      shopId,
+      filename,
+      totalRows,
+      successRows,
+      failedRows,
+      errors: {
+        importedRows,
+        updatedRows,
+        skippedRows,
+        failedRows,
+        errors: allErrors,
+        skipped,
+      } as unknown as Prisma.InputJsonValue,
+    },
+  });
+
+  if (auditEntries.length > 0) {
+    for (let i = 0; i < auditEntries.length; i += CHUNK_SIZE) {
+      await db.auditLog.createMany({
+        data: auditEntries.slice(i, i + CHUNK_SIZE),
+      });
+    }
+  }
+
+  await createAuditLog({
+    shopId,
+    action: "HISTORICAL_CSV_IMPORT_COMPLETED",
+    entity: "ImportBatch",
+    entityId: importBatch.id,
+    metadata: {
+      filename,
+      importMode: parsedMode.data,
+      totalRows,
+      importedRows,
+      updatedRows,
+      skippedRows,
+      failedRows,
+    },
+  });
+
+  return {
+    totalRows,
+    importedRows,
+    updatedRows,
+    skippedRows,
+    failedRows,
+    errors: allErrors,
+    skipped,
+    importBatchId: importBatch.id,
+  };
+}
+
+export function validateCsvUpload(file: File | null): string | null {
+  if (!file || !(file instanceof File) || file.size === 0) {
+    return "Please choose a CSV file.";
+  }
+
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    return "Only .csv files are accepted.";
+  }
+
+  const mime = file.type.toLowerCase();
+  if (
+    mime &&
+    mime !== "text/csv" &&
+    mime !== "application/csv" &&
+    mime !== "application/vnd.ms-excel" &&
+    mime !== "text/plain"
+  ) {
+    return "The uploaded file does not look like a CSV.";
+  }
+
+  if (file.size > MAX_FILE_BYTES) {
+    return "File is too large. Maximum size is 10 MB.";
+  }
+
+  return null;
+}

@@ -22,7 +22,7 @@ export default function App() {
         <s-link href="/app/products">Products</s-link>
         <s-link href="/app/items">Serialized Items</s-link>
         <s-link href="/app/stock">Stock</s-link>
-        <s-link href="/app/import">Excel Import</s-link>
+        <s-link href="/app/import">CSV Import</s-link>
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />

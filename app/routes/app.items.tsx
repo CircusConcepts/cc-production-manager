@@ -7,6 +7,7 @@ import { Form, useActionData, useLoaderData } from "react-router";
 import db from "../db.server";
 import { createAuditLog } from "../services/audit.server";
 import { getOrCreateShop } from "../services/shop.server";
+import { formatSourceType, formatStatus } from "../utils/labels";
 import { authenticate } from "../shopify.server";
 
 const ITEM_STATUSES: ItemStatus[] = [
@@ -83,7 +84,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const orderNumber = String(formData.get("orderNumber") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
 
-    if (!productSku) return { error: "Product SKU is required." };
+    if (!productSku || productSku === "") {
+      return { error: "Please select a product." };
+    }
     if (!serialNumber) return { error: "Serial number is required." };
     if (!isItemStatus(status)) return { error: "Invalid status." };
     if (!isSourceType(sourceType)) return { error: "Invalid source type." };
@@ -192,25 +195,27 @@ export default function SerializedItemsPage() {
   return (
     <s-page heading="Serialized Items">
       {actionData?.error && (
-        <s-banner tone="critical" heading="Error">
+        <s-banner tone="critical" heading="Could not save">
           {actionData.error}
         </s-banner>
       )}
       {actionData?.success && (
-        <s-banner tone="success" heading="Success">
+        <s-banner tone="success" heading="Saved">
           {actionData.success}
         </s-banner>
       )}
 
-      <s-section heading="Add serialized item">
+      <s-section heading="Add item">
         {products.length === 0 ? (
-          <s-text>Create a product first before adding serialized items.</s-text>
+          <s-text>
+            Add a product first, then you can register serialized items here.
+          </s-text>
         ) : (
           <Form method="post">
             <input type="hidden" name="intent" value="create" />
             <s-stack direction="block" gap="base">
-              <s-select name="productSku" label="Product SKU" required>
-                <s-option value="">Select a product</s-option>
+              <s-select name="productSku" label="Product" required>
+                <s-option value="">Choose a product</s-option>
                 {products.map((product) => (
                   <s-option key={product.sku} value={product.sku}>
                     {product.sku} — {product.name}
@@ -226,14 +231,14 @@ export default function SerializedItemsPage() {
               <s-select name="status" label="Status" value="IN_STOCK">
                 {statuses.map((status) => (
                   <s-option key={status} value={status}>
-                    {status}
+                    {formatStatus(status)}
                   </s-option>
                 ))}
               </s-select>
-              <s-select name="sourceType" label="Source type" value="STOCK">
+              <s-select name="sourceType" label="Where it came from" value="STOCK">
                 {SOURCE_TYPES.map((sourceType) => (
                   <s-option key={sourceType} value={sourceType}>
-                    {sourceType}
+                    {formatSourceType(sourceType)}
                   </s-option>
                 ))}
               </s-select>
@@ -251,9 +256,9 @@ export default function SerializedItemsPage() {
         )}
       </s-section>
 
-      <s-section heading={`${items.length} items`}>
+      <s-section heading={`All items (${items.length})`}>
         {items.length === 0 ? (
-          <s-text>No serialized items yet.</s-text>
+          <s-text>No items yet. Use the form above to add one.</s-text>
         ) : (
           <s-table>
             <s-table-header-row>
@@ -273,8 +278,8 @@ export default function SerializedItemsPage() {
                   <s-table-cell>{item.serialNumber}</s-table-cell>
                   <s-table-cell>{item.sku}</s-table-cell>
                   <s-table-cell>{item.productName}</s-table-cell>
-                  <s-table-cell>{item.status}</s-table-cell>
-                  <s-table-cell>{item.sourceType}</s-table-cell>
+                  <s-table-cell>{formatStatus(item.status)}</s-table-cell>
+                  <s-table-cell>{formatSourceType(item.sourceType)}</s-table-cell>
                   <s-table-cell>{item.orderNumber ?? "—"}</s-table-cell>
                   <s-table-cell>{item.notes ?? "—"}</s-table-cell>
                   <s-table-cell>
@@ -293,7 +298,7 @@ export default function SerializedItemsPage() {
                         >
                           {statuses.map((status) => (
                             <s-option key={status} value={status}>
-                              {status}
+                              {formatStatus(status)}
                             </s-option>
                           ))}
                         </s-select>

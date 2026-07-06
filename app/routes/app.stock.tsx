@@ -44,14 +44,14 @@ export default function StockPage() {
 
   return (
     <s-page heading="Stock">
-      <s-section heading={`${totalInStock} items in stock`}>
+      <s-section heading={`In stock: ${totalInStock} items`}>
         <s-text>
-          Quantities are calculated from serialized items with status IN_STOCK.
-          Nothing is stored as a quantity field.
+          Counts are based on items marked &quot;In stock&quot;. Each item has
+          its own serial number.
         </s-text>
 
         {stockByProduct.length === 0 ? (
-          <s-text>No items currently in stock.</s-text>
+          <s-text>Nothing in stock right now.</s-text>
         ) : (
           <s-table>
             <s-table-header-row>

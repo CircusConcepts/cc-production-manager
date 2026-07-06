@@ -117,12 +117,12 @@ export default function ProductsPage() {
   return (
     <s-page heading="Products">
       {actionData?.error && (
-        <s-banner tone="critical" heading="Error">
+        <s-banner tone="critical" heading="Could not save">
           {actionData.error}
         </s-banner>
       )}
       {actionData?.success && (
-        <s-banner tone="success" heading="Success">
+        <s-banner tone="success" heading="Saved">
           {actionData.success}
         </s-banner>
       )}
@@ -157,9 +157,9 @@ export default function ProductsPage() {
         </Form>
       </s-section>
 
-      <s-section heading={`${products.length} products`}>
+      <s-section heading={`All products (${products.length})`}>
         {products.length === 0 ? (
-          <s-text>No products yet. Create one using the form above.</s-text>
+          <s-text>No products yet. Add your first product using the form above.</s-text>
         ) : (
           <s-table>
             <s-table-header-row>
