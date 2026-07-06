@@ -47,8 +47,8 @@ export default function App() {
             serialized inventory — no stored quantity fields.
           </li>
           <li>
-            <strong>Read-only Shopify</strong>. Reads products from Shopify;
-            all writes stay in your database.
+            <strong>Read-only toward Shopify</strong>. Production data is stored
+            in this app database.
           </li>
         </ul>
       </div>

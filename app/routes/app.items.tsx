@@ -85,7 +85,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const notes = String(formData.get("notes") ?? "").trim();
 
     if (!productSku || productSku === "") {
-      return { error: "Please select a product." };
+      return { error: "Please select a production SKU." };
     }
     if (!serialNumber) return { error: "Serial number is required." };
     if (!isItemStatus(status)) return { error: "Invalid status." };
@@ -96,7 +96,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!product) {
-      return { error: `Product SKU "${productSku}" not found.` };
+      return { error: `Production SKU "${productSku}" not found.` };
     }
 
     try {
@@ -208,14 +208,15 @@ export default function SerializedItemsPage() {
       <s-section heading="Add item">
         {products.length === 0 ? (
           <s-text>
-            Add a product first, then you can register serialized items here.
+            Add a production SKU first, then you can register serialized items
+            here.
           </s-text>
         ) : (
           <Form method="post">
             <input type="hidden" name="intent" value="create" />
             <s-stack direction="block" gap="base">
-              <s-select name="productSku" label="Product" required>
-                <s-option value="">Choose a product</s-option>
+              <s-select name="productSku" label="Production SKU" required>
+                <s-option value="">Choose a production SKU</s-option>
                 {products.map((product) => (
                   <s-option key={product.sku} value={product.sku}>
                     {product.sku} — {product.name}
@@ -264,7 +265,7 @@ export default function SerializedItemsPage() {
             <s-table-header-row>
               <s-table-header>Serial Number</s-table-header>
               <s-table-header>SKU</s-table-header>
-              <s-table-header>Product</s-table-header>
+              <s-table-header>Production SKU Name</s-table-header>
               <s-table-header>Status</s-table-header>
               <s-table-header>Source</s-table-header>
               <s-table-header>Order #</s-table-header>

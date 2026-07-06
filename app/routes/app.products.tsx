@@ -72,7 +72,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         metadata: { sku, name },
       });
 
-      return { success: `Product "${sku}" created.` };
+      return { success: `Production SKU "${sku}" created.` };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -94,7 +94,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!product) {
-      return { error: "Product not found." };
+      return { error: "Production SKU not found." };
     }
 
     await db.product.update({
@@ -103,7 +103,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     return {
-      success: `Product "${product.sku}" marked as ${product.active ? "inactive" : "active"}.`,
+      success: `Production SKU "${product.sku}" marked as ${product.active ? "inactive" : "active"}.`,
     };
   }
 
@@ -115,7 +115,7 @@ export default function ProductsPage() {
   const actionData = useActionData<typeof action>();
 
   return (
-    <s-page heading="Products">
+    <s-page heading="Production SKUs">
       {actionData?.error && (
         <s-banner tone="critical" heading="Could not save">
           {actionData.error}
@@ -127,7 +127,14 @@ export default function ProductsPage() {
         </s-banner>
       )}
 
-      <s-section heading="Add product">
+      <s-section heading="About production SKUs">
+        <s-text>
+          Production SKUs are stored only in this app database. Creating a
+          production SKU here does not create a Shopify product.
+        </s-text>
+      </s-section>
+
+      <s-section heading="Add production SKU">
         <Form method="post">
           <input type="hidden" name="intent" value="create" />
           <s-stack direction="block" gap="base">
@@ -151,15 +158,18 @@ export default function ProductsPage() {
             <s-text-area name="notes" label="Notes" />
             <s-checkbox name="active" label="Active" defaultChecked />
             <s-button type="submit" variant="primary">
-              Create product
+              Create production SKU
             </s-button>
           </s-stack>
         </Form>
       </s-section>
 
-      <s-section heading={`All products (${products.length})`}>
+      <s-section heading={`All production SKUs (${products.length})`}>
         {products.length === 0 ? (
-          <s-text>No products yet. Add your first product using the form above.</s-text>
+          <s-text>
+            No production SKUs yet. Add your first production SKU using the form
+            above.
+          </s-text>
         ) : (
           <s-table>
             <s-table-header-row>
