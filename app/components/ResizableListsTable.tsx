@@ -231,15 +231,15 @@ export function ResizableListsTable({
 }
 
 export const DEFAULT_LISTS_TABLE_COLUMNS: ResizableColumn[] = [
-  { key: "product", label: "Product / SKU", width: 180 },
-  { key: "serialNumber", label: "Serial Number", width: 170 },
+  { key: "serialNumber", label: "Serial Number", width: 150 },
+  { key: "product", label: "Product / SKU", width: 190 },
   { key: "orderNumber", label: "Order #", width: 130 },
   { key: "color", label: "Color", width: 120 },
   { key: "size", label: "Size", width: 100 },
   { key: "employee", label: "Employee", width: 140 },
-  { key: "notes", label: "Notes", width: 240, wrap: true },
+  { key: "notes", label: "Notes", width: 260, wrap: true },
   { key: "updated", label: "Updated", width: 160 },
   { key: "updateStatus", label: "Update Status", width: 180 },
-  { key: "rowActions", label: "", width: 120 },
+  { key: "rowActions", label: "Edit", width: 140 },
   { key: "delete", label: "Delete", width: 120 },
 ];

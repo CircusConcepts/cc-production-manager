@@ -187,7 +187,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           shopId: shop.id,
           product: { productCategoryId: category.id },
         },
-        orderBy: [{ product: { sku: "asc" } }, { updatedAt: "desc" }],
+        orderBy: [{ serialNumber: "asc" }, { product: { sku: "asc" } }],
         include: {
           product: { select: { id: true, sku: true, name: true } },
           colorRef: { select: { name: true } },
@@ -620,6 +620,11 @@ function matchesItemSearch(item: ItemRow, query: string): boolean {
   return haystack.includes(q);
 }
 
+const serialNumberSorter = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
 interface InlineListsTableProps {
   items: ItemRow[];
   categoryProducts: Array<{ id: string; sku: string; name: string }>;
@@ -637,7 +642,7 @@ function InlineListsTable({
 }: InlineListsTableProps) {
   const fetcher = useFetcher<ActionResult>();
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
-  const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
+  const [editingIds, setEditingIds] = useState<Set<string>>(new Set());
   const [rowMessages, setRowMessages] = useState<
     Record<string, { error?: string; success?: string }>
   >({});
@@ -647,8 +652,31 @@ function InlineListsTable({
     [drafts],
   );
 
+  const stopEditRow = useCallback((itemId: string) => {
+    setEditingIds((current) => {
+      const next = new Set(current);
+      next.delete(itemId);
+      return next;
+    });
+  }, []);
+
+  const startEditRow = useCallback((item: ItemRow) => {
+    setDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [item.id]: currentDrafts[item.id] ?? itemToDraft(item),
+    }));
+    setEditingIds((current) => new Set(current).add(item.id));
+    setRowMessages((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+  }, []);
+
   const updateDraft = useCallback(
     (item: ItemRow, patch: Partial<RowDraft>) => {
+      if (!editingIds.has(item.id)) return;
+
       const current = drafts[item.id] ?? itemToDraft(item);
       const next = { ...current, ...patch };
 
@@ -657,33 +685,31 @@ function InlineListsTable({
       }
 
       setDrafts((currentDrafts) => ({ ...currentDrafts, [item.id]: next }));
-      setDirtyIds((currentDirty) => new Set(currentDirty).add(item.id));
       setRowMessages((current) => {
         const nextMessages = { ...current };
         delete nextMessages[item.id];
         return nextMessages;
       });
     },
-    [drafts],
+    [drafts, editingIds],
   );
 
-  const cancelRow = useCallback((item: ItemRow) => {
-    setDrafts((currentDrafts) => {
-      const nextDrafts = { ...currentDrafts };
-      delete nextDrafts[item.id];
-      return nextDrafts;
-    });
-    setDirtyIds((currentDirty) => {
-      const nextDirty = new Set(currentDirty);
-      nextDirty.delete(item.id);
-      return nextDirty;
-    });
-    setRowMessages((current) => {
-      const nextMessages = { ...current };
-      delete nextMessages[item.id];
-      return nextMessages;
-    });
-  }, []);
+  const cancelRow = useCallback(
+    (item: ItemRow) => {
+      setDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[item.id];
+        return nextDrafts;
+      });
+      setRowMessages((current) => {
+        const nextMessages = { ...current };
+        delete nextMessages[item.id];
+        return nextMessages;
+      });
+      stopEditRow(item.id);
+    },
+    [stopEditRow],
+  );
 
   const saveRow = useCallback(
     (item: ItemRow) => {
@@ -727,24 +753,21 @@ function InlineListsTable({
         delete nextDrafts[itemId];
         return nextDrafts;
       });
-      setDirtyIds((currentDirty) => {
-        const nextDirty = new Set(currentDirty);
-        nextDirty.delete(itemId);
-        return nextDirty;
-      });
+      stopEditRow(itemId);
       setRowMessages((current) => ({
         ...current,
         [itemId]: { success: fetcher.data?.success },
       }));
     }
-  }, [fetcher.state, fetcher.data]);
+  }, [fetcher.state, fetcher.data, stopEditRow]);
 
   const tableRows = useMemo(
     () =>
       items.map((item) => {
+        const isEditing = editingIds.has(item.id);
         const draft = getDraft(item);
-        const isDirty = dirtyIds.has(item.id);
-        const stockOrder = isStockOrderNumber(draft.orderNumber);
+        const readOnlyStockOrder = isStockOrderNumber(item.orderNumber);
+        const editStockOrder = isStockOrderNumber(draft.orderNumber);
         const saving =
           fetcher.state !== "idle" &&
           fetcher.formData?.get("itemId") === item.id;
@@ -753,7 +776,19 @@ function InlineListsTable({
         return {
           id: item.id,
           cells: {
-            product: (
+            serialNumber: isEditing ? (
+              <input
+                className={tableStyles.cellInput}
+                value={draft.serialNumber}
+                onChange={(event) =>
+                  updateDraft(item, { serialNumber: event.currentTarget.value })
+                }
+                autoComplete="off"
+              />
+            ) : (
+              <span className={tableStyles.readonlyCell}>{item.serialNumber}</span>
+            ),
+            product: isEditing ? (
               <select
                 className={tableStyles.cellSelect}
                 value={draft.productId}
@@ -767,18 +802,12 @@ function InlineListsTable({
                   </option>
                 ))}
               </select>
+            ) : (
+              <span className={tableStyles.readonlyCell}>
+                {item.sku} — {item.productName}
+              </span>
             ),
-            serialNumber: (
-              <input
-                className={tableStyles.cellInput}
-                value={draft.serialNumber}
-                onChange={(event) =>
-                  updateDraft(item, { serialNumber: event.currentTarget.value })
-                }
-                autoComplete="off"
-              />
-            ),
-            orderNumber: (
+            orderNumber: isEditing ? (
               <input
                 className={tableStyles.cellInput}
                 value={draft.orderNumber}
@@ -787,8 +816,12 @@ function InlineListsTable({
                 }
                 autoComplete="off"
               />
+            ) : (
+              <span className={tableStyles.readonlyCell}>
+                {item.orderNumber || "—"}
+              </span>
             ),
-            color: (
+            color: isEditing ? (
               <select
                 className={tableStyles.cellSelect}
                 value={draft.colorId}
@@ -803,8 +836,12 @@ function InlineListsTable({
                   </option>
                 ))}
               </select>
+            ) : (
+              <span className={tableStyles.readonlyCell}>
+                {item.colorName || "—"}
+              </span>
             ),
-            size: (
+            size: isEditing ? (
               <input
                 className={tableStyles.cellInput}
                 value={draft.size}
@@ -813,8 +850,10 @@ function InlineListsTable({
                 }
                 autoComplete="off"
               />
+            ) : (
+              <span className={tableStyles.readonlyCell}>{item.size || "—"}</span>
             ),
-            employee: (
+            employee: isEditing ? (
               <input
                 className={tableStyles.cellInput}
                 value={draft.madeBy}
@@ -823,8 +862,12 @@ function InlineListsTable({
                 }
                 autoComplete="off"
               />
+            ) : (
+              <span className={tableStyles.readonlyCell}>
+                {item.madeBy || "—"}
+              </span>
             ),
-            notes: (
+            notes: isEditing ? (
               <textarea
                 className={tableStyles.cellTextarea}
                 value={draft.notes}
@@ -832,46 +875,81 @@ function InlineListsTable({
                   updateDraft(item, { notes: event.currentTarget.value })
                 }
               />
+            ) : (
+              <span className={tableStyles.readonlyCell}>{item.notes || "—"}</span>
             ),
             updated: format(new Date(item.updatedAt), "MMM d, yyyy HH:mm"),
-            updateStatus: stockOrder ? (
-              <div>
-                <div>In stock</div>
-                <div className={tableStyles.rowStatus}>
-                  Auto-set because Order # is Stock
+            updateStatus:
+              isEditing && !editStockOrder ? (
+                <select
+                  className={tableStyles.cellSelect}
+                  value={draft.status}
+                  onChange={(event) =>
+                    updateDraft(item, { status: event.currentTarget.value })
+                  }
+                >
+                  {statuses.map((status) => (
+                    <option key={status} value={status}>
+                      {formatStatus(status as ItemStatus)}
+                    </option>
+                  ))}
+                </select>
+              ) : isEditing && editStockOrder ? (
+                <div>
+                  <div>In stock</div>
+                  <div className={tableStyles.rowStatus}>
+                    Auto-set because Order # is Stock
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <select
-                className={tableStyles.cellSelect}
-                value={draft.status}
-                onChange={(event) =>
-                  updateDraft(item, { status: event.currentTarget.value })
-                }
-              >
-                {statuses.map((status) => (
-                  <option key={status} value={status}>
-                    {formatStatus(status as ItemStatus)}
-                  </option>
-                ))}
-              </select>
-            ),
+              ) : readOnlyStockOrder ? (
+                <div>
+                  <div>In stock</div>
+                  <div className={tableStyles.rowStatus}>
+                    Auto-set because Order # is Stock
+                  </div>
+                </div>
+              ) : (
+                <span className={tableStyles.readonlyCell}>
+                  {formatStatus(item.status as ItemStatus)}
+                </span>
+              ),
             rowActions: (
               <div className={tableStyles.rowActions}>
-                {isDirty ? (
+                {!isEditing ? (
                   <>
-                    <button type="button" onClick={() => saveRow(item)} disabled={saving}>
+                    <button
+                      type="button"
+                      className={tableStyles.editButton}
+                      onClick={() => startEditRow(item)}
+                    >
+                      Edit
+                    </button>
+                    {rowMessage?.success && (
+                      <span className={tableStyles.rowStatus}>Saved</span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className={tableStyles.saveButton}
+                      onClick={() => saveRow(item)}
+                      disabled={saving}
+                    >
                       {saving ? "Saving..." : "Save"}
                     </button>
-                    <button type="button" onClick={() => cancelRow(item)} disabled={saving}>
+                    <button
+                      type="button"
+                      className={tableStyles.cancelButton}
+                      onClick={() => cancelRow(item)}
+                      disabled={saving}
+                    >
                       Cancel
                     </button>
+                    {rowMessage?.error && (
+                      <span className={tableStyles.rowError}>{rowMessage.error}</span>
+                    )}
                   </>
-                ) : rowMessage?.success ? (
-                  <span className={tableStyles.rowStatus}>Saved</span>
-                ) : null}
-                {rowMessage?.error && (
-                  <span className={tableStyles.rowError}>{rowMessage.error}</span>
                 )}
               </div>
             ),
@@ -901,8 +979,8 @@ function InlineListsTable({
       }),
     [
       items,
+      editingIds,
       getDraft,
-      dirtyIds,
       categoryProducts,
       colors,
       statuses,
@@ -910,6 +988,7 @@ function InlineListsTable({
       updateDraft,
       saveRow,
       cancelRow,
+      startEditRow,
       fetcher.state,
       fetcher.formData,
       rowMessages,
@@ -919,7 +998,7 @@ function InlineListsTable({
   return (
     <div className="appTableArea">
       <ResizableListsTable
-        storageKey={`lists-table-columns:${categoryId}`}
+        storageKey={`lists-table-columns:v2:${categoryId}`}
         columns={DEFAULT_LISTS_TABLE_COLUMNS}
         rows={tableRows}
       />
@@ -948,8 +1027,21 @@ export default function ListsPage() {
   const filteredItems = useMemo(() => {
     const safeItems = Array.isArray(items) ? items : [];
     const q = itemSearch.trim();
-    if (!q) return safeItems;
-    return safeItems.filter((item) => matchesItemSearch(item, q));
+
+    const visibleItems = q
+      ? safeItems.filter((item) => matchesItemSearch(item, q))
+      : safeItems;
+
+    return [...visibleItems].sort((a, b) => {
+      const bySerial = serialNumberSorter.compare(
+        a.serialNumber ?? "",
+        b.serialNumber ?? "",
+      );
+
+      if (bySerial !== 0) return bySerial;
+
+      return serialNumberSorter.compare(a.sku ?? "", b.sku ?? "");
+    });
   }, [items, itemSearch]);
 
   return (
