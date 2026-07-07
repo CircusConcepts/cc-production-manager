@@ -549,14 +549,13 @@ function matchesItemSearch(
 }
 
 export default function ListsPage() {
-  const {
-    categoryOptions,
-    selectedCategory,
-    categoryProducts,
-    items,
-    colors,
-    statuses,
-  } = useLoaderData<typeof loader>();
+  const loaderData = useLoaderData<typeof loader>();
+  const categoryOptions = loaderData?.categoryOptions ?? [];
+  const selectedCategory = loaderData?.selectedCategory ?? null;
+  const categoryProducts = loaderData?.categoryProducts ?? [];
+  const items = loaderData?.items ?? [];
+  const colors = loaderData?.colors ?? [];
+  const statuses = loaderData?.statuses ?? ITEM_STATUSES;
   const actionData = useActionData<typeof action>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -570,14 +569,15 @@ export default function ListsPage() {
   const createIsStock = isStockOrderNumber(createOrderNumber);
 
   const filteredItems = useMemo(() => {
+    const safeItems = Array.isArray(items) ? items : [];
     const q = itemSearch.trim();
-    if (!q) return items;
-    return items.filter((item) => matchesItemSearch(item, q));
+    if (!q) return safeItems;
+    return safeItems.filter((item) => matchesItemSearch(item, q));
   }, [items, itemSearch]);
 
   const tableRows = useMemo(
     () =>
-      filteredItems.map((item) => {
+      (Array.isArray(filteredItems) ? filteredItems : []).map((item) => {
         const stockOrder = isStockOrderNumber(item.orderNumber);
 
         return {

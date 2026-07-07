@@ -35,25 +35,40 @@ function loadColumnWidths(
   storageKey: string,
   columns: ResizableColumn[],
 ): Record<string, number> {
+  const safeColumns = Array.isArray(columns) ? columns : [];
+
   if (typeof window === "undefined") {
-    return Object.fromEntries(columns.map((column) => [column.key, column.width]));
+    return Object.fromEntries(
+      safeColumns.map((column) => [column.key, column.width]),
+    );
   }
 
   try {
     const raw = window.localStorage.getItem(storageKey);
     if (!raw) {
-      return Object.fromEntries(columns.map((column) => [column.key, column.width]));
+      return Object.fromEntries(
+        safeColumns.map((column) => [column.key, column.width]),
+      );
     }
 
-    const parsed = JSON.parse(raw) as Record<string, number>;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return Object.fromEntries(
+        safeColumns.map((column) => [column.key, column.width]),
+      );
+    }
+
+    const widths = parsed as Record<string, number>;
     return Object.fromEntries(
-      columns.map((column) => [
+      safeColumns.map((column) => [
         column.key,
-        Math.max(column.minWidth ?? MIN_COL_WIDTH, parsed[column.key] ?? column.width),
+        Math.max(column.minWidth ?? MIN_COL_WIDTH, widths[column.key] ?? column.width),
       ]),
     );
   } catch {
-    return Object.fromEntries(columns.map((column) => [column.key, column.width]));
+    return Object.fromEntries(
+      safeColumns.map((column) => [column.key, column.width]),
+    );
   }
 }
 
@@ -62,8 +77,11 @@ export function ResizableListsTable({
   columns,
   rows,
 }: ResizableListsTableProps) {
+  const safeColumns = Array.isArray(columns) ? columns : DEFAULT_LISTS_TABLE_COLUMNS;
+  const safeRows = Array.isArray(rows) ? rows : [];
+
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() =>
-    loadColumnWidths(storageKey, columns),
+    loadColumnWidths(storageKey, safeColumns),
   );
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
   const resizeState = useRef<
@@ -83,8 +101,8 @@ export function ResizableListsTable({
   >(null);
 
   useEffect(() => {
-    setColumnWidths(loadColumnWidths(storageKey, columns));
-  }, [storageKey, columns]);
+    setColumnWidths(loadColumnWidths(storageKey, safeColumns));
+  }, [storageKey, safeColumns]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -97,7 +115,7 @@ export function ResizableListsTable({
 
     if (state.type === "column") {
       const delta = event.clientX - state.startX;
-      const column = columns.find((entry) => entry.key === state.key);
+      const column = safeColumns.find((entry) => entry.key === state.key);
       const minWidth = column?.minWidth ?? MIN_COL_WIDTH;
       setColumnWidths((current) => ({
         ...current,
@@ -111,7 +129,7 @@ export function ResizableListsTable({
       ...current,
       [state.rowId]: Math.max(MIN_ROW_HEIGHT, state.startHeight + delta),
     }));
-  }, [columns]);
+  }, [safeColumns]);
 
   const onPointerUp = useCallback(() => {
     resizeState.current = null;
@@ -152,11 +170,11 @@ export function ResizableListsTable({
 
   const tableWidth = useMemo(
     () =>
-      columns.reduce(
+      safeColumns.reduce(
         (sum, column) => sum + (columnWidths[column.key] ?? column.width),
         0,
       ),
-    [columnWidths, columns],
+    [columnWidths, safeColumns],
   );
 
   return (
@@ -164,7 +182,7 @@ export function ResizableListsTable({
       <table className={styles.resizableTable} style={{ width: tableWidth }}>
         <thead>
           <tr>
-            {columns.map((column) => (
+            {safeColumns.map((column) => (
               <th
                 key={column.key}
                 style={{ width: columnWidths[column.key] ?? column.width }}
@@ -179,12 +197,12 @@ export function ResizableListsTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
+          {safeRows.map((row) => {
             const rowHeight = rowHeights[row.id] ?? MIN_ROW_HEIGHT;
 
             return (
               <tr key={row.id} style={{ height: rowHeight }}>
-                {columns.map((column) => (
+                {safeColumns.map((column) => (
                   <td
                     key={column.key}
                     style={{
@@ -197,7 +215,7 @@ export function ResizableListsTable({
                     >
                       {row.cells[column.key]}
                     </div>
-                    {column.key === columns[columns.length - 1]?.key && (
+                    {column.key === safeColumns[safeColumns.length - 1]?.key && (
                       <div
                         className={styles.rowResizeHandle}
                         onPointerDown={(event) => startRowResize(row.id, event)}
