@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "97b078161ea0de92beeac6fd1ed01de0"
-name = "cc-production-manager"
+name = "Production Manager"
 application_url = "https://cc-production-manager.onrender.com"
 embedded = true
 

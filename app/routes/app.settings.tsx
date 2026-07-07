@@ -47,6 +47,11 @@ export default function SettingsPage() {
             Creating Production SKUs does not create Shopify products.
           </s-text>
           <s-text>CSV imports write only to PostgreSQL.</s-text>
+          <s-text>
+            Editing or deleting serialized items and production SKUs affects
+            only this app database — never Shopify products, inventory, or
+            orders.
+          </s-text>
         </s-stack>
 
         {hasWriteScope && (

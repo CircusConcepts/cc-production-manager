@@ -208,12 +208,18 @@ export default function HistoricalCsvImportPage() {
           <s-list-item>
             Employee: employee, made by, operator, worker
           </s-list-item>
+          <s-list-item>
+            Color: color, colour, item color, item colour
+          </s-list-item>
+          <s-list-item>Size: size, item size, product size</s-list-item>
           <s-list-item>Status: status, production status</s-list-item>
           <s-list-item>Notes: notes, comment, remarks</s-list-item>
         </s-unordered-list>
         <s-text>
-          If status is blank and an order number is present, the item is marked
-          Shipped. If both are blank, it is marked In stock.
+          If Order # is &quot;Stock&quot; (any case), status is always set to
+          In stock. Otherwise, if status is blank and an order number is
+          present, the item is marked Shipped. If both are blank, it is marked
+          In stock.
         </s-text>
       </s-section>
 

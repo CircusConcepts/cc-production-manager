@@ -1,10 +1,10 @@
-import type { ItemStatus } from "@prisma/client";
-import type { Prisma } from "@prisma/client";
+import type { ItemStatus, Prisma } from "@prisma/client";
 import { isValid, parse, parseISO } from "date-fns";
 import { parse as parseCsv } from "csv-parse/sync";
 import { z } from "zod";
 
 import db from "../db.server";
+import { resolveDefaultStatus } from "../utils/itemStatus";
 import { createAuditLog } from "./audit.server";
 
 export type ImportMode = "skip" | "update" | "fail";
@@ -42,6 +42,8 @@ interface NormalizedCsvRow {
   orderNumber?: string;
   productionDate?: string;
   madeBy?: string;
+  color?: string;
+  size?: string;
   status?: string;
   notes?: string;
 }
@@ -109,6 +111,10 @@ const EMPLOYEE_HEADERS = [
 const STATUS_HEADERS = ["status", "item status", "production status"];
 
 const NOTES_HEADERS = ["notes", "note", "comment", "comments", "remarks"];
+
+const COLOR_HEADERS = ["color", "colour", "item color", "item colour"];
+
+const SIZE_HEADERS = ["size", "item size", "product size"];
 
 const STATUS_MAP: Record<string, ItemStatus> = {
   planned: "PLANNED",
@@ -212,15 +218,6 @@ export function parseProductionDate(
   return { date: null, error: `Could not parse date "${value}".` };
 }
 
-function resolveDefaultStatus(
-  orderNumber: string | undefined,
-  status?: ItemStatus,
-): ItemStatus {
-  if (status) return status;
-  if (orderNumber) return "SHIPPED";
-  return "IN_STOCK";
-}
-
 function normalizeRawRow(
   raw: Record<string, string | undefined>,
   rowNumber: number,
@@ -240,6 +237,8 @@ function normalizeRawRow(
     orderNumber: getValueByPossibleHeaders(record, ORDER_HEADERS),
     productionDate: getValueByPossibleHeaders(record, DATE_HEADERS),
     madeBy: getValueByPossibleHeaders(record, EMPLOYEE_HEADERS),
+    color: getValueByPossibleHeaders(record, COLOR_HEADERS),
+    size: getValueByPossibleHeaders(record, SIZE_HEADERS),
     status: getValueByPossibleHeaders(record, STATUS_HEADERS),
     notes: getValueByPossibleHeaders(record, NOTES_HEADERS),
   };
@@ -417,6 +416,8 @@ async function processChunk({
             status: row.resolvedStatus,
             orderNumber: row.orderNumber ?? null,
             madeBy: row.madeBy ?? null,
+            color: row.color ?? null,
+            size: row.size ?? null,
             completedAt: row.completedAt,
             notes: row.notes ?? null,
           },
@@ -437,6 +438,9 @@ async function processChunk({
             rowNumber: row.rowNumber,
             sku: row.sku,
             serialNumber: row.serialNumber,
+            color: row.color,
+            size: row.size,
+            employee: row.madeBy,
           },
         });
         continue;
@@ -481,6 +485,8 @@ async function processChunk({
           productId: product.id,
           orderNumber: row.orderNumber ?? null,
           madeBy: row.madeBy ?? null,
+          color: row.color ?? null,
+          size: row.size ?? null,
           completedAt: row.completedAt,
           notes: row.notes ?? null,
           status: row.resolvedStatus,
@@ -497,6 +503,9 @@ async function processChunk({
           rowNumber: row.rowNumber,
           sku: row.sku,
           serialNumber: row.serialNumber,
+          color: row.color,
+          size: row.size,
+          employee: row.madeBy,
         },
       });
     } catch {

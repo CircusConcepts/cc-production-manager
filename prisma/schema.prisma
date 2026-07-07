@@ -87,6 +87,8 @@ model SerializedItem {
   productionOrderLine   ProductionOrderLine? @relation(fields: [productionOrderLineId], references: [id], onDelete: SetNull)
 
   madeBy      String?
+  color       String?
+  size        String?
   qcBy        String?
   qcAt        DateTime?
   completedAt DateTime?

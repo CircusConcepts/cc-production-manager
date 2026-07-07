@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { format } from "date-fns";
+import { useMemo, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData } from "react-router";
 
@@ -20,6 +21,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         where: { status: "IN_STOCK" },
         select: { id: true },
       },
+      _count: { select: { items: true } },
     },
   });
 
@@ -29,8 +31,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sku: product.sku,
       name: product.name,
       category: product.category,
+      notes: product.notes,
       active: product.active,
       inStockCount: product.items.length,
+      itemCount: product._count.items,
       updatedAt: product.updatedAt.toISOString(),
     })),
   };
@@ -107,12 +111,133 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  if (intent === "updateProduct") {
+    const productId = String(formData.get("productId") ?? "");
+    const sku = String(formData.get("sku") ?? "").trim();
+    const name = String(formData.get("name") ?? "").trim();
+    const category = String(formData.get("category") ?? "").trim();
+    const notes = String(formData.get("notes") ?? "").trim();
+    const active = formData.get("active") === "on";
+
+    if (!sku) return { error: "SKU is required." };
+    if (!name) return { error: "Name is required." };
+
+    const product = await db.product.findFirst({
+      where: { id: productId, shopId: shop.id },
+    });
+
+    if (!product) return { error: "Production SKU not found." };
+
+    const before = {
+      sku: product.sku,
+      name: product.name,
+      category: product.category,
+      notes: product.notes,
+      active: product.active,
+    };
+
+    try {
+      await db.product.update({
+        where: { id: product.id },
+        data: {
+          sku,
+          name,
+          category: category || null,
+          notes: notes || null,
+          active,
+        },
+      });
+
+      await createAuditLog({
+        shopId: shop.id,
+        action: "product.updated",
+        entity: "Product",
+        entityId: product.id,
+        metadata: {
+          before,
+          after: {
+            sku,
+            name,
+            category: category || null,
+            notes: notes || null,
+            active,
+          },
+        },
+      });
+
+      return { success: `Production SKU "${sku}" updated.` };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        return {
+          error: `SKU "${sku}" already exists for this shop.`,
+        };
+      }
+      throw error;
+    }
+  }
+
+  if (intent === "deleteProduct") {
+    const productId = String(formData.get("productId") ?? "");
+
+    const product = await db.product.findFirst({
+      where: { id: productId, shopId: shop.id },
+      include: { _count: { select: { items: true } } },
+    });
+
+    if (!product) return { error: "Production SKU not found." };
+
+    if (product._count.items > 0) {
+      return {
+        error:
+          "Cannot delete this SKU because it has serialized items. Deactivate it instead.",
+      };
+    }
+
+    await createAuditLog({
+      shopId: shop.id,
+      action: "product.deleted",
+      entity: "Product",
+      entityId: product.id,
+      metadata: {
+        sku: product.sku,
+        name: product.name,
+      },
+    });
+
+    await db.product.delete({ where: { id: product.id } });
+
+    return { success: `Production SKU "${product.sku}" deleted from app database.` };
+  }
+
   return { error: "Unknown action." };
 };
 
 export default function ProductsPage() {
   const { products } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const [search, setSearch] = useState("");
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+
+  const filteredProducts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((product) => {
+      const activeLabel = product.active ? "active" : "inactive";
+      const haystack = [
+        product.sku,
+        product.name,
+        product.category,
+        activeLabel,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [products, search]);
 
   return (
     <s-page heading="Production SKUs">
@@ -129,8 +254,9 @@ export default function ProductsPage() {
 
       <s-section heading="About production SKUs">
         <s-text>
-          Production SKUs are stored only in this app database. Creating a
-          production SKU here does not create a Shopify product.
+          Production SKUs are stored only in this app database. Creating,
+          editing, or deleting a production SKU here does not create or change
+          any Shopify product.
         </s-text>
       </s-section>
 
@@ -164,14 +290,84 @@ export default function ProductsPage() {
         </Form>
       </s-section>
 
-      <s-section heading={`All production SKUs (${products.length})`}>
+      <s-section heading={`All production SKUs (${filteredProducts.length})`}>
+        <s-text-field
+          label="Search production SKUs"
+          value={search}
+          onInput={(e) => setSearch(e.currentTarget.value)}
+          autocomplete="off"
+        />
+
         {products.length === 0 ? (
           <s-text>
             No production SKUs yet. Add your first production SKU using the form
             above.
           </s-text>
+        ) : filteredProducts.length === 0 ? (
+          <s-text>No production SKUs match your search.</s-text>
         ) : (
-          <s-table>
+          <>
+            {editingProductId && (() => {
+              const editingProduct = products.find(
+                (product) => product.id === editingProductId,
+              );
+              if (!editingProduct) return null;
+
+              return (
+                <s-section heading={`Edit ${editingProduct.sku}`}>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="updateProduct" />
+                    <input type="hidden" name="productId" value={editingProduct.id} />
+                    <s-stack direction="block" gap="base">
+                      <s-text-field
+                        name="sku"
+                        label="SKU"
+                        defaultValue={editingProduct.sku}
+                        required
+                        autocomplete="off"
+                      />
+                      <s-text-field
+                        name="name"
+                        label="Name"
+                        defaultValue={editingProduct.name}
+                        required
+                        autocomplete="off"
+                      />
+                      <s-text-field
+                        name="category"
+                        label="Category"
+                        defaultValue={editingProduct.category ?? ""}
+                        autocomplete="off"
+                      />
+                      <s-text-area
+                        name="notes"
+                        label="Notes"
+                        defaultValue={editingProduct.notes ?? ""}
+                      />
+                      <s-checkbox
+                        name="active"
+                        label="Active"
+                        defaultChecked={editingProduct.active}
+                      />
+                      <s-stack direction="inline" gap="base">
+                        <s-button type="submit" variant="primary">
+                          Save
+                        </s-button>
+                        <s-button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => setEditingProductId(null)}
+                        >
+                          Cancel
+                        </s-button>
+                      </s-stack>
+                    </s-stack>
+                  </Form>
+                </s-section>
+              );
+            })()}
+
+            <s-table>
             <s-table-header-row>
               <s-table-header>SKU</s-table-header>
               <s-table-header>Name</s-table-header>
@@ -182,29 +378,57 @@ export default function ProductsPage() {
               <s-table-header>Actions</s-table-header>
             </s-table-header-row>
             <s-table-body>
-              {products.map((product) => (
+              {filteredProducts.map((product) => (
                 <s-table-row key={product.id}>
-                  <s-table-cell>{product.sku}</s-table-cell>
-                  <s-table-cell>{product.name}</s-table-cell>
-                  <s-table-cell>{product.category ?? "—"}</s-table-cell>
-                  <s-table-cell>{product.active ? "Yes" : "No"}</s-table-cell>
-                  <s-table-cell>{product.inStockCount}</s-table-cell>
-                  <s-table-cell>
-                    {format(new Date(product.updatedAt), "MMM d, yyyy HH:mm")}
-                  </s-table-cell>
-                  <s-table-cell>
-                    <Form method="post">
-                      <input type="hidden" name="intent" value="toggleActive" />
-                      <input type="hidden" name="productId" value={product.id} />
-                      <s-button type="submit" variant="secondary">
-                        {product.active ? "Deactivate" : "Activate"}
-                      </s-button>
-                    </Form>
+                    <s-table-cell>{product.sku}</s-table-cell>
+                    <s-table-cell>{product.name}</s-table-cell>
+                    <s-table-cell>{product.category ?? "—"}</s-table-cell>
+                    <s-table-cell>{product.active ? "Yes" : "No"}</s-table-cell>
+                    <s-table-cell>{product.inStockCount}</s-table-cell>
+                    <s-table-cell>
+                      {format(new Date(product.updatedAt), "MMM d, yyyy HH:mm")}
+                    </s-table-cell>
+                    <s-table-cell>
+                      <s-stack direction="inline" gap="base">
+                        <s-button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => setEditingProductId(product.id)}
+                        >
+                          Edit
+                        </s-button>
+                        <Form method="post">
+                          <input type="hidden" name="intent" value="toggleActive" />
+                          <input type="hidden" name="productId" value={product.id} />
+                          <s-button type="submit" variant="secondary">
+                            {product.active ? "Deactivate" : "Activate"}
+                          </s-button>
+                        </Form>
+                        <Form
+                          method="post"
+                          onSubmit={(e) => {
+                            if (
+                              !confirm(
+                                "Delete this production SKU from the app database? This does not affect Shopify.",
+                              )
+                            ) {
+                              e.preventDefault();
+                            }
+                          }}
+                        >
+                          <input type="hidden" name="intent" value="deleteProduct" />
+                          <input type="hidden" name="productId" value={product.id} />
+                          <s-button type="submit" variant="secondary">
+                            Delete
+                          </s-button>
+                        </Form>
+                      </s-stack>
                   </s-table-cell>
                 </s-table-row>
               ))}
             </s-table-body>
           </s-table>
+          </>
         )}
       </s-section>
     </s-page>

@@ -1,6 +1,6 @@
 # cc-production-manager
 
-Internal production and stock management app for **CircusConcepts**, built as a Shopify embedded Admin app.
+Internal production and stock management app for **CircusConcepts**, built as a Shopify embedded Admin app. The Shopify Admin display name is **Production Manager**.
 
 The app tracks physical manufactured items (ropes, straps, etc.) by serial number. It is **read-only toward Shopify** — all production data is stored in PostgreSQL.
 
@@ -11,6 +11,7 @@ The app tracks physical manufactured items (ropes, straps, etc.) by serial numbe
 - **Production SKUs** are local app database records (`Product` model in Prisma). They are not Shopify products.
 - Creating a **Production SKU** does **not** create a Shopify product.
 - **Serialized Items** are local app database records — one row per physical manufactured item.
+- Creating, editing, or deleting serialized items and production SKUs affects **only this app database**, never Shopify.
 - **CSV imports** write only to PostgreSQL. Uploaded files are parsed in memory and are not stored on disk.
 - **Stock quantity** is never stored directly. It is calculated by counting `SerializedItem` rows where `status = IN_STOCK`.
 - No `read_orders` scope, no order webhooks, and no Shopify product sync are enabled yet.
