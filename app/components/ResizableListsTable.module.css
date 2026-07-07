@@ -69,3 +69,34 @@
   word-break: break-word;
   white-space: normal;
 }
+
+.cellInput,
+.cellSelect,
+.cellTextarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.cellTextarea {
+  min-height: 2.5rem;
+  resize: vertical;
+}
+
+.rowActions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rowStatus {
+  font-size: 12px;
+  color: #616161;
+}
+
+.rowError {
+  font-size: 12px;
+  color: #d72c0d;
+}

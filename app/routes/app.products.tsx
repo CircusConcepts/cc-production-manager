@@ -866,6 +866,7 @@ export default function ProductsPage() {
 
   return (
     <s-page heading="Products">
+      <div className="appWideSection">
       {actionData?.error && (
         <s-banner tone="critical" heading="Could not save">
           {actionData.error}
@@ -1408,6 +1409,7 @@ export default function ProductsPage() {
           </s-table>
         )}
       </s-section>
+      </div>
     </s-page>
   );
 }

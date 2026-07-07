@@ -4,6 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
 import { authenticate } from "../shopify.server";
+import "../styles/app-layout.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -25,7 +26,9 @@ export default function App() {
         <s-link href="/app/import">CSV Import</s-link>
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
-      <Outlet />
+      <div className="appFullWidthPageShell">
+        <Outlet />
+      </div>
     </AppProvider>
   );
 }

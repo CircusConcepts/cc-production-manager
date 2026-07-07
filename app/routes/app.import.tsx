@@ -146,6 +146,7 @@ export default function HistoricalCsvImportPage() {
 
   return (
     <s-page heading="Historical CSV Import">
+      <div className="appWideSection">
       {actionData && "error" in actionData && actionData.error && (
         <s-banner tone="critical" heading="Import failed">
           {actionData.error}
@@ -159,7 +160,8 @@ export default function HistoricalCsvImportPage() {
       <s-section heading="Upload CSV">
         <s-text>
           Upload previous production records from CSV. Each row should represent
-          one physical item with a unique serial number.
+          one physical item. Serial numbers must be unique per SKU, not across
+          the whole shop.
         </s-text>
 
         <Form method="post" encType="multipart/form-data">
@@ -260,6 +262,7 @@ export default function HistoricalCsvImportPage() {
           </s-table>
         )}
       </s-section>
+      </div>
     </s-page>
   );
 }

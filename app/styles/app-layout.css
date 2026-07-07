@@ -1,0 +1,22 @@
+.appWidePageShell {
+  width: min(100%, 1800px);
+  max-width: 1800px;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
+.appFullWidthPageShell {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+
+.appWideSection {
+  width: 100%;
+}
+
+.appTableArea {
+  width: 100%;
+  max-width: none;
+  overflow-x: auto;
+}

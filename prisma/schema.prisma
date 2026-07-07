@@ -141,7 +141,7 @@ model SerializedItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([shopId, serialNumber])
+  @@unique([productId, serialNumber])
   @@index([shopId, status])
   @@index([shopId, orderNumber])
   @@index([productId])

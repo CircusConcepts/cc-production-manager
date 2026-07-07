@@ -7,6 +7,10 @@ import db from "../db.server";
 import { ensureColorByName } from "./color.server";
 import { resolveDefaultStatus } from "../utils/itemStatus";
 import { normalizeSku } from "../utils/sku";
+import {
+  formatDuplicateSerialError,
+  formatItemIdentity,
+} from "../utils/serializedItem";
 import { ensureProductForSku } from "./productSku.server";
 import { createAuditLog } from "./audit.server";
 
@@ -257,27 +261,34 @@ function normalizeRawRow(
   };
 }
 
-export function detectDuplicateSerialNumbersWithinFile(
+export function detectDuplicateSkuSerialWithinFile(
   rows: NormalizedCsvRow[],
 ): ImportRowError[] {
-  const seen = new Map<string, number>();
+  const seen = new Map<
+    string,
+    { rowNumber: number; sku: string; serialNumber: string }
+  >();
   const errors: ImportRowError[] = [];
 
   for (const row of rows) {
-    if (!row.serialNumber) continue;
+    if (!row.sku || !row.serialNumber) continue;
 
-    const key = row.serialNumber.toLowerCase();
-    const firstRow = seen.get(key);
+    const key = `${normalizeSku(row.sku)}::${row.serialNumber.trim()}`;
+    const first = seen.get(key);
 
-    if (firstRow !== undefined) {
+    if (first !== undefined) {
       errors.push({
         rowNumber: row.rowNumber,
         sku: row.sku,
         serialNumber: row.serialNumber,
-        message: `Duplicate serial number in file (first seen on row ${firstRow}).`,
+        message: `SKU ${row.sku} already has serial number ${row.serialNumber} in this CSV (first seen on row ${first.rowNumber}).`,
       });
     } else {
-      seen.set(key, row.rowNumber);
+      seen.set(key, {
+        rowNumber: row.rowNumber,
+        sku: row.sku,
+        serialNumber: row.serialNumber,
+      });
     }
   }
 
@@ -397,14 +408,15 @@ async function processChunk({
         shopId,
         row.color,
       );
-      const existing = existingSerials.get(row.serialNumber);
+      const compositeKey = `${product.id}::${row.serialNumber.trim()}`;
+      const existing = existingSerials.get(compositeKey);
 
       if (!existing) {
         const item = await db.serializedItem.create({
           data: {
             shopId,
             productId: product.id,
-            serialNumber: row.serialNumber,
+            serialNumber: row.serialNumber.trim(),
             sourceType: "IMPORT",
             status: row.resolvedStatus,
             orderNumber: row.orderNumber ?? null,
@@ -417,7 +429,7 @@ async function processChunk({
           },
         });
 
-        existingSerials.set(row.serialNumber, {
+        existingSerials.set(compositeKey, {
           id: item.id,
           productId: product.id,
         });
@@ -430,8 +442,11 @@ async function processChunk({
           entityId: item.id,
           metadata: {
             rowNumber: row.rowNumber,
+            productId: product.id,
             sku: row.sku,
+            productName: row.productName ?? row.sku,
             serialNumber: row.serialNumber,
+            itemIdentity: formatItemIdentity(row.sku, row.serialNumber),
             category: row.category,
             color: colorLabel ?? row.color,
             size: row.size,
@@ -447,7 +462,7 @@ async function processChunk({
           rowNumber: row.rowNumber,
           sku: row.sku,
           serialNumber: row.serialNumber,
-          reason: "Serial number already exists.",
+          reason: formatDuplicateSerialError(row.sku, row.serialNumber),
         });
         auditEntries.push({
           shopId,
@@ -456,8 +471,11 @@ async function processChunk({
           entityId: existing.id,
           metadata: {
             rowNumber: row.rowNumber,
+            productId: product.id,
             sku: row.sku,
+            productName: row.productName ?? row.sku,
             serialNumber: row.serialNumber,
+            itemIdentity: formatItemIdentity(row.sku, row.serialNumber),
           },
         });
         continue;
@@ -469,7 +487,7 @@ async function processChunk({
           rowNumber: row.rowNumber,
           sku: row.sku,
           serialNumber: row.serialNumber,
-          message: "Serial number already exists.",
+          message: formatDuplicateSerialError(row.sku, row.serialNumber),
         });
         continue;
       }
@@ -497,8 +515,11 @@ async function processChunk({
         entityId: existing.id,
         metadata: {
           rowNumber: row.rowNumber,
+          productId: product.id,
           sku: row.sku,
+          productName: row.productName ?? row.sku,
           serialNumber: row.serialNumber,
+          itemIdentity: formatItemIdentity(row.sku, row.serialNumber),
           category: row.category,
           color: colorLabel ?? row.color,
           size: row.size,
@@ -564,7 +585,7 @@ export async function importHistoricalCsv({
     if (row) normalizedRows.push(row);
   });
 
-  const duplicateErrors = detectDuplicateSerialNumbersWithinFile(normalizedRows);
+  const duplicateErrors = detectDuplicateSkuSerialWithinFile(normalizedRows);
   const duplicateRowNumbers = new Set(duplicateErrors.map((e) => e.rowNumber));
 
   const rowsWithoutFileDuplicates = normalizedRows.filter(
@@ -585,7 +606,7 @@ export async function importHistoricalCsv({
 
   const existingSerials = new Map(
     existingItems.map((item) => [
-      item.serialNumber,
+      `${item.productId}::${item.serialNumber}`,
       { id: item.id, productId: item.productId },
     ]),
   );

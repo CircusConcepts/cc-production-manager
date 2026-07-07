@@ -67,6 +67,7 @@ export default function StockPage() {
 
   return (
     <s-page heading="Stock">
+      <div className="appWideSection">
       <s-section heading={`In stock: ${totalInStock} items`}>
         <s-text>
           Counts are based on items marked &quot;In stock&quot; in this app
@@ -85,6 +86,7 @@ export default function StockPage() {
         ) : filteredRows.length === 0 ? (
           <s-text>No stock items match your search.</s-text>
         ) : (
+          <div className="appTableArea">
           <s-table>
             <s-table-header-row>
               <s-table-header>SKU</s-table-header>
@@ -109,8 +111,10 @@ export default function StockPage() {
               ))}
             </s-table-body>
           </s-table>
+          </div>
         )}
       </s-section>
+      </div>
     </s-page>
   );
 }

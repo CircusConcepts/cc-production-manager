@@ -29,6 +29,7 @@ export default function SettingsPage() {
 
   return (
     <s-page heading="Settings">
+      <div className="appWideSection">
       <s-section heading="Shop">
         <s-stack direction="block" gap="base">
           <s-text>Domain: {shopDomain}</s-text>
@@ -66,6 +67,7 @@ export default function SettingsPage() {
           </s-banner>
         )}
       </s-section>
+      </div>
     </s-page>
   );
 }

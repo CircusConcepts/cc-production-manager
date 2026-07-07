@@ -42,6 +42,7 @@ export default function Dashboard() {
 
   return (
     <s-page heading="Production Manager">
+      <div className="appWideSection">
       <s-section heading="Overview">
         <s-stack direction="inline" gap="base">
           <s-box padding="base" borderWidth="base" borderRadius="base">
@@ -70,6 +71,7 @@ export default function Dashboard() {
           </s-box>
         </s-stack>
       </s-section>
+      </div>
     </s-page>
   );
 }

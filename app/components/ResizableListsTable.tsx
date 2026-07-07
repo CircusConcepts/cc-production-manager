@@ -210,9 +210,7 @@ export function ResizableListsTable({
                       height: rowHeight,
                     }}
                   >
-                    <div
-                      className={column.wrap ? styles.cellWrap : styles.cellInner}
-                    >
+                    <div className={styles.cellWrap}>
                       {row.cells[column.key]}
                     </div>
                     {column.key === safeColumns[safeColumns.length - 1]?.key && (
@@ -233,8 +231,7 @@ export function ResizableListsTable({
 }
 
 export const DEFAULT_LISTS_TABLE_COLUMNS: ResizableColumn[] = [
-  { key: "sku", label: "SKU", width: 110 },
-  { key: "productName", label: "Product Name", width: 180 },
+  { key: "product", label: "Product / SKU", width: 180 },
   { key: "serialNumber", label: "Serial Number", width: 170 },
   { key: "orderNumber", label: "Order #", width: 130 },
   { key: "color", label: "Color", width: 120 },
@@ -243,6 +240,6 @@ export const DEFAULT_LISTS_TABLE_COLUMNS: ResizableColumn[] = [
   { key: "notes", label: "Notes", width: 240, wrap: true },
   { key: "updated", label: "Updated", width: 160 },
   { key: "updateStatus", label: "Update Status", width: 180 },
-  { key: "edit", label: "Edit", width: 100 },
+  { key: "rowActions", label: "", width: 120 },
   { key: "delete", label: "Delete", width: 120 },
 ];
