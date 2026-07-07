@@ -4,6 +4,7 @@ import { parse as parseCsv } from "csv-parse/sync";
 import { z } from "zod";
 
 import db from "../db.server";
+import { ensureColorByName } from "./color.server";
 import { resolveDefaultStatus } from "../utils/itemStatus";
 import { normalizeSku } from "../utils/sku";
 import { ensureProductForSku } from "./productSku.server";
@@ -40,6 +41,7 @@ interface NormalizedCsvRow {
   rowNumber: number;
   sku: string;
   productName?: string;
+  category?: string;
   serialNumber: string;
   orderNumber?: string;
   productionDate?: string;
@@ -115,6 +117,14 @@ const STATUS_HEADERS = ["status", "item status", "production status"];
 const NOTES_HEADERS = ["notes", "note", "comment", "comments", "remarks"];
 
 const COLOR_HEADERS = ["color", "colour", "item color", "item colour"];
+
+const CATEGORY_HEADERS = [
+  "category",
+  "product category",
+  "item category",
+  "type",
+  "product type",
+];
 
 const SIZE_HEADERS = ["size", "item size", "product size"];
 
@@ -235,6 +245,7 @@ function normalizeRawRow(
     rowNumber,
     sku: normalizeSku(sku ?? ""),
     productName: getValueByPossibleHeaders(record, NAME_HEADERS),
+    category: getValueByPossibleHeaders(record, CATEGORY_HEADERS),
     serialNumber: serialNumber ?? "",
     orderNumber: getValueByPossibleHeaders(record, ORDER_HEADERS),
     productionDate: getValueByPossibleHeaders(record, DATE_HEADERS),
@@ -331,6 +342,22 @@ export function validateRows(rows: NormalizedCsvRow[]): {
   return { validRows, errors };
 }
 
+async function resolveColorForImport(
+  shopId: string,
+  colorName?: string,
+): Promise<{ colorId: string | null; colorLabel: string | null }> {
+  if (!colorName?.trim()) {
+    return { colorId: null, colorLabel: null };
+  }
+
+  const color = await ensureColorByName(shopId, colorName);
+  if (!color) {
+    return { colorId: null, colorLabel: null };
+  }
+
+  return { colorId: color.id, colorLabel: color.name };
+}
+
 async function processChunk({
   shopId,
   rows,
@@ -364,6 +391,11 @@ async function processChunk({
         shopId,
         row.sku,
         row.productName,
+        row.category,
+      );
+      const { colorId, colorLabel } = await resolveColorForImport(
+        shopId,
+        row.color,
       );
       const existing = existingSerials.get(row.serialNumber);
 
@@ -377,7 +409,8 @@ async function processChunk({
             status: row.resolvedStatus,
             orderNumber: row.orderNumber ?? null,
             madeBy: row.madeBy ?? null,
-            color: row.color ?? null,
+            colorId,
+            color: colorLabel ?? row.color ?? null,
             size: row.size ?? null,
             completedAt: row.completedAt,
             notes: row.notes ?? null,
@@ -399,7 +432,8 @@ async function processChunk({
             rowNumber: row.rowNumber,
             sku: row.sku,
             serialNumber: row.serialNumber,
-            color: row.color,
+            category: row.category,
+            color: colorLabel ?? row.color,
             size: row.size,
             employee: row.madeBy,
           },
@@ -446,7 +480,8 @@ async function processChunk({
           productId: product.id,
           orderNumber: row.orderNumber ?? null,
           madeBy: row.madeBy ?? null,
-          color: row.color ?? null,
+          colorId,
+          color: colorLabel ?? row.color ?? null,
           size: row.size ?? null,
           completedAt: row.completedAt,
           notes: row.notes ?? null,
@@ -464,7 +499,8 @@ async function processChunk({
           rowNumber: row.rowNumber,
           sku: row.sku,
           serialNumber: row.serialNumber,
-          color: row.color,
+          category: row.category,
+          color: colorLabel ?? row.color,
           size: row.size,
           employee: row.madeBy,
         },

@@ -21,6 +21,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       product: {
         select: { sku: true, name: true },
       },
+      colorRef: {
+        select: { name: true },
+      },
     },
   });
 
@@ -29,15 +32,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     sku: item.product.sku,
     productName: item.product.name,
     serialNumber: item.serialNumber,
-    color: item.color,
+    color: item.colorRef?.name ?? item.color,
     size: item.size,
     employee: item.madeBy,
     orderNumber: item.orderNumber,
   }));
 
-  const totalInStock = stockRows.length;
-
-  return { stockRows, totalInStock };
+  return { stockRows, totalInStock: stockRows.length };
 };
 
 export default function StockPage() {

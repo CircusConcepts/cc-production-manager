@@ -10,111 +10,168 @@ import {
   useSearchParams,
 } from "react-router";
 
+import {
+  DEFAULT_LISTS_TABLE_COLUMNS,
+  ResizableListsTable,
+} from "../components/ResizableListsTable";
 import db from "../db.server";
 import { createAuditLog } from "../services/audit.server";
+import { findColorForShop } from "../services/color.server";
+import { findProductCategoryForShop } from "../services/productCategory.server";
 import { getOrCreateShop } from "../services/shop.server";
-import { ITEM_STATUSES, SOURCE_TYPES, isItemStatus, isSourceType } from "../utils/itemConstants";
-import { formatSourceType, formatStatus } from "../utils/labels";
+import { ITEM_STATUSES, isItemStatus } from "../utils/itemConstants";
+import { formatStatus } from "../utils/labels";
 import {
   isStockOrderNumber,
   resolveStatusForOrderNumber,
 } from "../utils/itemStatus";
 import { authenticate } from "../shopify.server";
 
-const CATEGORY_ALL = "__all__";
-const CATEGORY_UNCATEGORIZED = "__uncategorized__";
-
-function productMatchesCategory(
-  product: { category: string | null },
-  categoryFilter: string,
-): boolean {
-  if (categoryFilter === CATEGORY_ALL) return true;
-  if (categoryFilter === CATEGORY_UNCATEGORIZED) return !product.category?.trim();
-  return product.category?.trim() === categoryFilter;
-}
-
-function buildItemsUrl({
-  category,
-  productId,
-}: {
-  category: string;
-  productId?: string;
-}) {
-  const params = new URLSearchParams();
-  if (category !== CATEGORY_ALL) params.set("category", category);
-  if (productId) params.set("productId", productId);
-  const query = params.toString();
-  return query ? `/app/items?${query}` : "/app/items";
-}
-
-function formatProductOptionLabel(product: {
-  sku: string;
-  name: string;
-  active: boolean;
-  _count: { items: number };
-}): string {
-  const inactiveSuffix = product.active ? "" : " [inactive]";
-  return `${product.sku} — ${product.name} (${product._count.items} items)${inactiveSuffix}`;
-}
+type ActionResult = { error?: string; success?: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await getOrCreateShop(session.shop);
   const url = new URL(request.url);
-  const productId = url.searchParams.get("productId");
+  const categoryId = url.searchParams.get("categoryId");
 
-  const products = await db.product.findMany({
-    where: { shopId: shop.id, active: true },
-    orderBy: { sku: "asc" },
-    select: {
-      id: true,
-      sku: true,
-      name: true,
-      category: true,
-      active: true,
-      _count: { select: { items: true } },
-    },
+  const [categories, colors] = await Promise.all([
+    db.productCategory.findMany({
+      where: { shopId: shop.id, active: true },
+      orderBy: { name: "asc" },
+      include: {
+        _count: { select: { products: true } },
+        products: {
+          select: {
+            id: true,
+            _count: { select: { items: true } },
+            items: {
+              where: { status: "IN_STOCK" },
+              select: { id: true },
+            },
+          },
+        },
+      },
+    }),
+    db.color.findMany({
+      where: { shopId: shop.id, active: true },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, hex: true },
+    }),
+  ]);
+
+  const categoryOptions = categories.map((category) => {
+    const itemCount = category.products.reduce(
+      (sum, product) => sum + product._count.items,
+      0,
+    );
+    const inStockCount = category.products.reduce(
+      (sum, product) => sum + product.items.length,
+      0,
+    );
+
+    return {
+      id: category.id,
+      name: category.name,
+      productCount: category._count.products,
+      itemCount,
+      inStockCount,
+    };
   });
 
-  let selectedProduct: {
+  let selectedCategory: {
     id: string;
-    sku: string;
     name: string;
+    productCount: number;
+    itemCount: number;
+    inStockCount: number;
   } | null = null;
 
+  let categoryProducts: Array<{ id: string; sku: string; name: string }> = [];
   let items: Array<{
     id: string;
+    productId: string;
+    sku: string;
+    productName: string;
     serialNumber: string;
     status: string;
-    sourceType: string;
     orderNumber: string | null;
-    color: string | null;
+    colorId: string | null;
+    colorName: string | null;
     size: string | null;
     madeBy: string | null;
     notes: string | null;
     updatedAt: string;
   }> = [];
 
-  if (productId) {
-    const product = await db.product.findFirst({
-      where: { id: productId, shopId: shop.id },
-      select: { id: true, sku: true, name: true },
+  if (categoryId) {
+    const category = await db.productCategory.findFirst({
+      where: { id: categoryId, shopId: shop.id },
+      include: {
+        _count: { select: { products: true } },
+        products: {
+          where: { active: true },
+          orderBy: { sku: "asc" },
+          select: {
+            id: true,
+            sku: true,
+            name: true,
+            _count: { select: { items: true } },
+            items: {
+              where: { status: "IN_STOCK" },
+              select: { id: true },
+            },
+          },
+        },
+      },
     });
 
-    if (product) {
-      selectedProduct = product;
+    if (category) {
+      const itemCount = category.products.reduce(
+        (sum, product) => sum + product._count.items,
+        0,
+      );
+      const inStockCount = category.products.reduce(
+        (sum, product) => sum + product.items.length,
+        0,
+      );
+
+      selectedCategory = {
+        id: category.id,
+        name: category.name,
+        productCount: category._count.products,
+        itemCount,
+        inStockCount,
+      };
+
+      categoryProducts = category.products.map((product) => ({
+        id: product.id,
+        sku: product.sku,
+        name: product.name,
+      }));
+
       const rows = await db.serializedItem.findMany({
-        where: { shopId: shop.id, productId: product.id },
-        orderBy: { updatedAt: "desc" },
+        where: {
+          shopId: shop.id,
+          product: { productCategoryId: category.id },
+        },
+        orderBy: [{ product: { sku: "asc" } }, { updatedAt: "desc" }],
+        include: {
+          product: { select: { id: true, sku: true, name: true } },
+          colorRef: { select: { name: true } },
+        },
       });
 
       items = rows.map((item) => ({
         id: item.id,
+        productId: item.productId,
+        sku: item.product.sku,
+        productName: item.product.name,
         serialNumber: item.serialNumber,
         status: item.status,
-        sourceType: item.sourceType,
         orderNumber: item.orderNumber,
-        color: item.color,
+        colorId: item.colorId,
+        colorName: item.colorRef?.name ?? item.color,
         size: item.size,
         madeBy: item.madeBy,
         notes: item.notes,
@@ -123,45 +180,89 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  return { products, selectedProduct, items, statuses: ITEM_STATUSES };
+  return {
+    categoryOptions,
+    selectedCategory,
+    categoryProducts,
+    items,
+    colors,
+    statuses: ITEM_STATUSES,
+  };
 };
 
-async function getProductForShop(shopId: string, productId: string) {
-  return db.product.findFirst({
-    where: { id: productId, shopId },
+async function validateCategoryProduct(
+  shopId: string,
+  categoryId: string,
+  productId: string,
+) {
+  const category = await findProductCategoryForShop(shopId, categoryId);
+  if (!category) {
+    return { error: "Product category not found." as const };
+  }
+
+  const product = await db.product.findFirst({
+    where: {
+      id: productId,
+      shopId,
+      productCategoryId: categoryId,
+    },
     select: { id: true, sku: true, name: true },
   });
+
+  if (!product) {
+    return { error: "Selected product does not belong to this category." as const };
+  }
+
+  return { category, product };
 }
 
-export const action = async ({ request }: ActionFunctionArgs) => {
+async function resolveColorId(
+  shopId: string,
+  colorIdRaw: string,
+): Promise<{ colorId: string | null; colorName: string | null } | { error: string }> {
+  const colorId = colorIdRaw.trim();
+  if (!colorId) {
+    return { colorId: null, colorName: null };
+  }
+
+  const color = await findColorForShop(shopId, colorId);
+  if (!color) {
+    return { error: "Invalid color." };
+  }
+
+  return { colorId: color.id, colorName: color.name };
+}
+
+export const action = async ({ request }: ActionFunctionArgs): Promise<ActionResult> => {
   const { session } = await authenticate.admin(request);
   const shop = await getOrCreateShop(session.shop);
   const formData = await request.formData();
   const intent = formData.get("intent");
-  const productId = String(formData.get("productId") ?? "").trim();
+  const categoryId = String(formData.get("categoryId") ?? "").trim();
 
-  if (!productId) {
-    return { error: "Product selection is required." };
-  }
-
-  const product = await getProductForShop(shop.id, productId);
-  if (!product) {
-    return { error: "Product not found." };
+  if (!categoryId) {
+    return { error: "Product category selection is required." };
   }
 
   if (intent === "create") {
+    const productId = String(formData.get("productId") ?? "").trim();
     const serialNumber = String(formData.get("serialNumber") ?? "").trim();
     const statusInput = String(formData.get("status") ?? "IN_STOCK");
-    const sourceType = String(formData.get("sourceType") ?? "STOCK");
     const orderNumber = String(formData.get("orderNumber") ?? "").trim();
-    const color = String(formData.get("color") ?? "").trim();
     const size = String(formData.get("size") ?? "").trim();
     const madeBy = String(formData.get("madeBy") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
+    const colorIdRaw = String(formData.get("colorId") ?? "");
 
+    if (!productId) return { error: "Product selection is required." };
     if (!serialNumber) return { error: "Serial number is required." };
     if (!isItemStatus(statusInput)) return { error: "Invalid status." };
-    if (!isSourceType(sourceType)) return { error: "Invalid source type." };
+
+    const validated = await validateCategoryProduct(shop.id, categoryId, productId);
+    if ("error" in validated) return { error: validated.error };
+
+    const colorResult = await resolveColorId(shop.id, colorIdRaw);
+    if ("error" in colorResult) return { error: colorResult.error };
 
     const status = resolveStatusForOrderNumber({
       orderNumber: orderNumber || null,
@@ -172,12 +273,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const item = await db.serializedItem.create({
         data: {
           shopId: shop.id,
-          productId: product.id,
+          productId: validated.product.id,
           serialNumber,
           status,
-          sourceType,
+          sourceType: "MANUAL",
           orderNumber: orderNumber || null,
-          color: color || null,
+          colorId: colorResult.colorId,
+          color: colorResult.colorName,
           size: size || null,
           madeBy: madeBy || null,
           notes: notes || null,
@@ -191,10 +293,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         entityId: item.id,
         metadata: {
           serialNumber,
-          sku: product.sku,
+          sku: validated.product.sku,
+          categoryId,
           status,
-          sourceType,
-          color,
+          color: colorResult.colorName,
           size,
           employee: madeBy,
         },
@@ -223,7 +325,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     const item = await db.serializedItem.findFirst({
-      where: { id: itemId, shopId: shop.id, productId: product.id },
+      where: {
+        id: itemId,
+        shopId: shop.id,
+        product: { productCategoryId: categoryId },
+      },
       include: { product: { select: { sku: true, name: true } } },
     });
 
@@ -235,7 +341,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (item.status === status) {
-      return { success: `Item "${item.serialNumber}" is already ${formatStatus(status)}.` };
+      return {
+        success: `Item "${item.serialNumber}" is already ${formatStatus(status)}.`,
+      };
     }
 
     const previousStatus = item.status;
@@ -253,31 +361,44 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       metadata: {
         serialNumber: item.serialNumber,
         sku: item.product.sku,
+        categoryId,
         from: previousStatus,
         to: status,
       },
     });
 
-    return { success: `Item "${item.serialNumber}" updated to ${formatStatus(status)}.` };
+    return {
+      success: `Item "${item.serialNumber}" updated to ${formatStatus(status)}.`,
+    };
   }
 
   if (intent === "updateItem") {
     const itemId = String(formData.get("itemId") ?? "");
+    const productId = String(formData.get("productId") ?? "").trim();
     const serialNumber = String(formData.get("serialNumber") ?? "").trim();
     const statusInput = String(formData.get("status") ?? "IN_STOCK");
-    const sourceType = String(formData.get("sourceType") ?? "STOCK");
     const orderNumber = String(formData.get("orderNumber") ?? "").trim();
-    const color = String(formData.get("color") ?? "").trim();
     const size = String(formData.get("size") ?? "").trim();
     const madeBy = String(formData.get("madeBy") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
+    const colorIdRaw = String(formData.get("colorId") ?? "");
 
+    if (!productId) return { error: "Product selection is required." };
     if (!serialNumber) return { error: "Serial number is required." };
     if (!isItemStatus(statusInput)) return { error: "Invalid status." };
-    if (!isSourceType(sourceType)) return { error: "Invalid source type." };
+
+    const validated = await validateCategoryProduct(shop.id, categoryId, productId);
+    if ("error" in validated) return { error: validated.error };
+
+    const colorResult = await resolveColorId(shop.id, colorIdRaw);
+    if ("error" in colorResult) return { error: colorResult.error };
 
     const item = await db.serializedItem.findFirst({
-      where: { id: itemId, shopId: shop.id, productId: product.id },
+      where: {
+        id: itemId,
+        shopId: shop.id,
+        product: { productCategoryId: categoryId },
+      },
       include: { product: { select: { sku: true, name: true } } },
     });
 
@@ -289,11 +410,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     const before = {
+      productId: item.productId,
       serialNumber: item.serialNumber,
       status: item.status,
-      sourceType: item.sourceType,
       orderNumber: item.orderNumber,
-      color: item.color,
+      colorId: item.colorId,
       size: item.size,
       madeBy: item.madeBy,
       notes: item.notes,
@@ -303,11 +424,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await db.serializedItem.update({
         where: { id: item.id },
         data: {
+          productId: validated.product.id,
           serialNumber,
           status,
-          sourceType,
           orderNumber: orderNumber || null,
-          color: color || null,
+          colorId: colorResult.colorId,
+          color: colorResult.colorName,
           size: size || null,
           madeBy: madeBy || null,
           notes: notes || null,
@@ -320,14 +442,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         entity: "SerializedItem",
         entityId: item.id,
         metadata: {
-          sku: item.product.sku,
+          sku: validated.product.sku,
+          categoryId,
           before,
           after: {
+            productId: validated.product.id,
             serialNumber,
             status,
-            sourceType,
             orderNumber: orderNumber || null,
-            color: color || null,
+            colorId: colorResult.colorId,
             size: size || null,
             madeBy: madeBy || null,
             notes: notes || null,
@@ -353,8 +476,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const itemId = String(formData.get("itemId") ?? "");
 
     const item = await db.serializedItem.findFirst({
-      where: { id: itemId, shopId: shop.id, productId: product.id },
-      include: { product: { select: { sku: true, name: true } } },
+      where: {
+        id: itemId,
+        shopId: shop.id,
+        product: { productCategoryId: categoryId },
+      },
+      include: {
+        product: { select: { sku: true, name: true } },
+        colorRef: { select: { name: true } },
+      },
     });
 
     if (!item) return { error: "Item not found." };
@@ -368,8 +498,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         serialNumber: item.serialNumber,
         sku: item.product.sku,
         productName: item.product.name,
+        categoryId,
         orderNumber: item.orderNumber,
-        color: item.color,
+        color: item.colorRef?.name ?? item.color,
         size: item.size,
         employee: item.madeBy,
         previousStatus: item.status,
@@ -386,11 +517,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 function matchesItemSearch(
   item: {
+    sku: string;
+    productName: string;
     serialNumber: string;
     orderNumber: string | null;
     status: string;
-    sourceType: string;
-    color: string | null;
+    colorName: string | null;
     size: string | null;
     madeBy: string | null;
     notes: string | null;
@@ -399,11 +531,12 @@ function matchesItemSearch(
 ): boolean {
   const q = query.toLowerCase();
   const haystack = [
+    item.sku,
+    item.productName,
     item.serialNumber,
     item.orderNumber,
     formatStatus(item.status as never),
-    formatSourceType(item.sourceType as never),
-    item.color,
+    item.colorName,
     item.size,
     item.madeBy,
     item.notes,
@@ -416,44 +549,25 @@ function matchesItemSearch(
 }
 
 export default function ListsPage() {
-  const { products, selectedProduct, items, statuses } =
-    useLoaderData<typeof loader>();
+  const {
+    categoryOptions,
+    selectedCategory,
+    categoryProducts,
+    items,
+    colors,
+    statuses,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const productId = searchParams.get("productId") ?? "";
-  const categoryParam = searchParams.get("category") ?? CATEGORY_ALL;
+  const categoryId = searchParams.get("categoryId") ?? "";
 
   const [itemSearch, setItemSearch] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editStatus, setEditStatus] = useState("IN_STOCK");
-  const [editSourceType, setEditSourceType] = useState("STOCK");
   const [createOrderNumber, setCreateOrderNumber] = useState("");
   const [createStatus, setCreateStatus] = useState("IN_STOCK");
   const createIsStock = isStockOrderNumber(createOrderNumber);
-
-  const categoryOptions = useMemo(() => {
-    const named = new Set<string>();
-    let hasUncategorized = false;
-
-    for (const product of products) {
-      if (product.category?.trim()) {
-        named.add(product.category.trim());
-      } else {
-        hasUncategorized = true;
-      }
-    }
-
-    return {
-      named: [...named].sort((a, b) => a.localeCompare(b)),
-      hasUncategorized,
-    };
-  }, [products]);
-
-  const filteredProducts = useMemo(
-    () => products.filter((product) => productMatchesCategory(product, categoryParam)),
-    [products, categoryParam],
-  );
 
   const filteredItems = useMemo(() => {
     const q = itemSearch.trim();
@@ -461,24 +575,90 @@ export default function ListsPage() {
     return items.filter((item) => matchesItemSearch(item, q));
   }, [items, itemSearch]);
 
-  const handleCategoryChange = (value: string) => {
-    const currentProduct = products.find((product) => product.id === productId);
-    const keepProductId =
-      currentProduct && productMatchesCategory(currentProduct, value)
-        ? productId
-        : undefined;
+  const tableRows = useMemo(
+    () =>
+      filteredItems.map((item) => {
+        const stockOrder = isStockOrderNumber(item.orderNumber);
 
-    navigate(buildItemsUrl({ category: value, productId: keepProductId }));
-  };
-
-  const handleProductChange = (value: string) => {
-    navigate(
-      buildItemsUrl({
-        category: categoryParam,
-        productId: value || undefined,
+        return {
+          id: item.id,
+          cells: {
+            sku: item.sku,
+            productName: item.productName,
+            serialNumber: item.serialNumber,
+            orderNumber: item.orderNumber ?? "—",
+            color: item.colorName ?? "—",
+            size: item.size ?? "—",
+            employee: item.madeBy ?? "—",
+            notes: item.notes ?? "—",
+            updated: format(new Date(item.updatedAt), "MMM d, yyyy HH:mm"),
+            updateStatus: stockOrder ? (
+              <div>
+                <div>In stock</div>
+                <div>Auto-set because Order # is Stock</div>
+              </div>
+            ) : (
+              <Form method="post">
+                <input type="hidden" name="intent" value="updateStatus" />
+                <input type="hidden" name="categoryId" value={selectedCategory?.id} />
+                <input type="hidden" name="itemId" value={item.id} />
+                <s-stack direction="inline" gap="base">
+                  <s-select
+                    name="status"
+                    label="Status"
+                    labelAccessibilityVisibility="exclusive"
+                    value={item.status}
+                  >
+                    {statuses.map((status) => (
+                      <s-option key={status} value={status}>
+                        {formatStatus(status)}
+                      </s-option>
+                    ))}
+                  </s-select>
+                  <s-button type="submit" variant="secondary">
+                    Update
+                  </s-button>
+                </s-stack>
+              </Form>
+            ),
+            edit: (
+              <s-button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setEditingItemId(item.id);
+                  setEditStatus(item.status);
+                }}
+              >
+                Edit
+              </s-button>
+            ),
+            delete: (
+              <Form
+                method="post"
+                onSubmit={(e) => {
+                  if (
+                    !confirm(
+                      "Delete this local item from the app database? This does not affect Shopify.",
+                    )
+                  ) {
+                    e.preventDefault();
+                  }
+                }}
+              >
+                <input type="hidden" name="intent" value="deleteItem" />
+                <input type="hidden" name="categoryId" value={selectedCategory?.id} />
+                <input type="hidden" name="itemId" value={item.id} />
+                <s-button type="submit" variant="secondary">
+                  Delete item
+                </s-button>
+              </Form>
+            ),
+          },
+        };
       }),
-    );
-  };
+    [filteredItems, selectedCategory?.id, statuses],
+  );
 
   return (
     <s-page heading="Lists">
@@ -493,112 +673,122 @@ export default function ListsPage() {
         </s-banner>
       )}
 
-      <s-section heading="Select product">
+      <s-section heading="Select product category">
         <s-text>
-          Choose a product to manage its list items. All changes are saved only
-          in this app database — never in Shopify.
+          Choose a product category to view and manage all list items for its
+          products. All changes are saved only in this app database — never in
+          Shopify.
         </s-text>
 
-        {products.length === 0 ? (
+        {categoryOptions.length === 0 ? (
           <s-text>
-            Add a product first on the Products page, then you can register list
-            items here.
+            Create product categories on the Products page, assign products to
+            them, then return here.
           </s-text>
         ) : (
-          <s-stack direction="block" gap="base">
-            <s-select
-              label="Product category"
-              value={categoryParam}
-              onChange={(e) => handleCategoryChange(e.currentTarget.value)}
-            >
-              <s-option value={CATEGORY_ALL}>All categories</s-option>
-              {categoryOptions.named.map((category) => (
-                <s-option key={category} value={category}>
-                  {category}
-                </s-option>
-              ))}
-              {categoryOptions.hasUncategorized && (
-                <s-option value={CATEGORY_UNCATEGORIZED}>Uncategorized</s-option>
-              )}
-            </s-select>
-
-            <s-select
-              label="Product"
-              value={productId}
-              onChange={(e) => handleProductChange(e.currentTarget.value)}
-            >
-              <s-option value="">Select a product</s-option>
-              {filteredProducts.map((product) => (
-                <s-option key={product.id} value={product.id}>
-                  {formatProductOptionLabel(product)}
-                </s-option>
-              ))}
-            </s-select>
-          </s-stack>
+          <s-select
+            label="Product category"
+            value={categoryId}
+            onChange={(e) => {
+              const nextCategoryId = e.currentTarget.value;
+              navigate(
+                nextCategoryId
+                  ? `/app/items?categoryId=${nextCategoryId}`
+                  : "/app/items",
+              );
+            }}
+          >
+            <s-option value="">Select product category</s-option>
+            {categoryOptions.map((category) => (
+              <s-option key={category.id} value={category.id}>
+                {category.name} ({category.productCount} products,{" "}
+                {category.itemCount} items)
+              </s-option>
+            ))}
+          </s-select>
         )}
       </s-section>
 
-      {selectedProduct && (
+      {selectedCategory && (
         <>
-          <s-section
-            heading={`Add item for ${selectedProduct.sku} — ${selectedProduct.name}`}
-          >
-            <Form method="post">
-              <input type="hidden" name="intent" value="create" />
-              <input type="hidden" name="productId" value={selectedProduct.id} />
-              <s-stack direction="block" gap="base">
-                <s-text-field
-                  name="serialNumber"
-                  label="Serial number"
-                  required
-                  autocomplete="off"
-                />
-                <s-text-field
-                  name="orderNumber"
-                  label="Order number"
-                  value={createOrderNumber}
-                  onInput={(e) => setCreateOrderNumber(e.currentTarget.value)}
-                  autocomplete="off"
-                />
-                {createIsStock && (
-                  <s-text>
-                    Auto-set because Order # is Stock — status will be In stock.
-                  </s-text>
-                )}
-                <s-select
-                  name="status"
-                  label="Status"
-                  value={createIsStock ? "IN_STOCK" : createStatus}
-                  disabled={createIsStock}
-                  onChange={(e) => setCreateStatus(e.currentTarget.value)}
-                >
-                  {statuses.map((status) => (
-                    <s-option key={status} value={status}>
-                      {formatStatus(status)}
-                    </s-option>
-                  ))}
-                </s-select>
-                <s-select name="sourceType" label="Where it came from" value="STOCK">
-                  {SOURCE_TYPES.map((sourceType) => (
-                    <s-option key={sourceType} value={sourceType}>
-                      {formatSourceType(sourceType)}
-                    </s-option>
-                  ))}
-                </s-select>
-                <s-text-field name="color" label="Color" autocomplete="off" />
-                <s-text-field name="size" label="Size" autocomplete="off" />
-                <s-text-field name="madeBy" label="Employee" autocomplete="off" />
-                <s-text-area name="notes" label="Notes" />
-                <s-button type="submit" variant="primary">
-                  Create item
-                </s-button>
-              </s-stack>
-            </Form>
+          <s-section heading={`Lists for ${selectedCategory.name}`}>
+            <s-stack direction="block" gap="base">
+              <s-text>Category: {selectedCategory.name}</s-text>
+              <s-text>Products/SKUs: {selectedCategory.productCount}</s-text>
+              <s-text>Total list items: {selectedCategory.itemCount}</s-text>
+              <s-text>In stock: {selectedCategory.inStockCount}</s-text>
+            </s-stack>
           </s-section>
 
-          <s-section
-            heading={`Items for ${selectedProduct.sku} — ${selectedProduct.name} (${filteredItems.length})`}
-          >
+          <s-section heading={`Add item — ${selectedCategory.name}`}>
+            {categoryProducts.length === 0 ? (
+              <s-text>Add products to this category first.</s-text>
+            ) : colors.length === 0 ? (
+              <s-text>Define colors first on the Products page.</s-text>
+            ) : (
+              <Form method="post">
+                <input type="hidden" name="intent" value="create" />
+                <input type="hidden" name="categoryId" value={selectedCategory.id} />
+                <s-stack direction="block" gap="base">
+                  <s-select name="productId" label="Product" value="">
+                    <s-option value="">Select product</s-option>
+                    {categoryProducts.map((product) => (
+                      <s-option key={product.id} value={product.id}>
+                        {product.sku} — {product.name}
+                      </s-option>
+                    ))}
+                  </s-select>
+                  <s-text-field
+                    name="serialNumber"
+                    label="Serial number"
+                    required
+                    autocomplete="off"
+                  />
+                  <s-text-field
+                    name="orderNumber"
+                    label="Order number"
+                    value={createOrderNumber}
+                    onInput={(e) => setCreateOrderNumber(e.currentTarget.value)}
+                    autocomplete="off"
+                  />
+                  {createIsStock && (
+                    <s-text>
+                      Auto-set because Order # is Stock — status will be In stock.
+                    </s-text>
+                  )}
+                  <s-select
+                    name="status"
+                    label="Status"
+                    value={createIsStock ? "IN_STOCK" : createStatus}
+                    disabled={createIsStock}
+                    onChange={(e) => setCreateStatus(e.currentTarget.value)}
+                  >
+                    {statuses.map((status) => (
+                      <s-option key={status} value={status}>
+                        {formatStatus(status)}
+                      </s-option>
+                    ))}
+                  </s-select>
+                  <s-select name="colorId" label="Color" value="">
+                    <s-option value="">Select color</s-option>
+                    {colors.map((color) => (
+                      <s-option key={color.id} value={color.id}>
+                        {color.name}
+                      </s-option>
+                    ))}
+                  </s-select>
+                  <s-text-field name="size" label="Size" autocomplete="off" />
+                  <s-text-field name="madeBy" label="Employee" autocomplete="off" />
+                  <s-text-area name="notes" label="Notes" />
+                  <s-button type="submit" variant="primary">
+                    Add item
+                  </s-button>
+                </s-stack>
+              </Form>
+            )}
+          </s-section>
+
+          <s-section heading={`Items (${filteredItems.length})`}>
             <s-text-field
               label="Search items"
               value={itemSearch}
@@ -608,16 +798,27 @@ export default function ListsPage() {
 
             {editingItemId && (() => {
               const editingItem = items.find((item) => item.id === editingItemId);
-              if (!editingItem) return null;
+              if (!editingItem || !selectedCategory) return null;
               const editStockOrder = isStockOrderNumber(editingItem.orderNumber);
 
               return (
                 <s-section heading={`Edit item ${editingItem.serialNumber}`}>
                   <Form method="post">
                     <input type="hidden" name="intent" value="updateItem" />
-                    <input type="hidden" name="productId" value={selectedProduct.id} />
+                    <input type="hidden" name="categoryId" value={selectedCategory.id} />
                     <input type="hidden" name="itemId" value={editingItem.id} />
                     <s-stack direction="block" gap="base">
+                      <s-select
+                        name="productId"
+                        label="Product"
+                        value={editingItem.productId}
+                      >
+                        {categoryProducts.map((product) => (
+                          <s-option key={product.id} value={product.id}>
+                            {product.sku} — {product.name}
+                          </s-option>
+                        ))}
+                      </s-select>
                       <s-text-field
                         name="serialNumber"
                         label="Serial number"
@@ -645,23 +846,17 @@ export default function ListsPage() {
                         ))}
                       </s-select>
                       <s-select
-                        name="sourceType"
-                        label="Source"
-                        value={editSourceType}
-                        onChange={(e) => setEditSourceType(e.currentTarget.value)}
+                        name="colorId"
+                        label="Color"
+                        value={editingItem.colorId ?? ""}
                       >
-                        {SOURCE_TYPES.map((sourceType) => (
-                          <s-option key={sourceType} value={sourceType}>
-                            {formatSourceType(sourceType)}
+                        <s-option value="">Select color</s-option>
+                        {colors.map((color) => (
+                          <s-option key={color.id} value={color.id}>
+                            {color.name}
                           </s-option>
                         ))}
                       </s-select>
-                      <s-text-field
-                        name="color"
-                        label="Color"
-                        defaultValue={editingItem.color ?? ""}
-                        autocomplete="off"
-                      />
                       <s-text-field
                         name="size"
                         label="Size"
@@ -689,7 +884,6 @@ export default function ListsPage() {
                           onClick={() => {
                             setEditingItemId(null);
                             setEditStatus("IN_STOCK");
-                            setEditSourceType("STOCK");
                           }}
                         >
                           Cancel
@@ -702,120 +896,21 @@ export default function ListsPage() {
             })()}
 
             {filteredItems.length === 0 ? (
-              <s-text>No list items for this product yet.</s-text>
+              <s-text>No list items for this category yet.</s-text>
             ) : (
-              <s-table>
-                <s-table-header-row>
-                  <s-table-header>Serial Number</s-table-header>
-                  <s-table-header>Status</s-table-header>
-                  <s-table-header>Source</s-table-header>
-                  <s-table-header>Order #</s-table-header>
-                  <s-table-header>Color</s-table-header>
-                  <s-table-header>Size</s-table-header>
-                  <s-table-header>Employee</s-table-header>
-                  <s-table-header>Notes</s-table-header>
-                  <s-table-header>Updated</s-table-header>
-                  <s-table-header>Update Status</s-table-header>
-                  <s-table-header>Edit</s-table-header>
-                  <s-table-header>Delete</s-table-header>
-                </s-table-header-row>
-                <s-table-body>
-                  {filteredItems.map((item) => {
-                    const stockOrder = isStockOrderNumber(item.orderNumber);
-
-                    return (
-                      <s-table-row key={item.id}>
-                        <s-table-cell>{item.serialNumber}</s-table-cell>
-                        <s-table-cell>{formatStatus(item.status as never)}</s-table-cell>
-                        <s-table-cell>{formatSourceType(item.sourceType as never)}</s-table-cell>
-                        <s-table-cell>{item.orderNumber ?? "—"}</s-table-cell>
-                        <s-table-cell>{item.color ?? "—"}</s-table-cell>
-                        <s-table-cell>{item.size ?? "—"}</s-table-cell>
-                        <s-table-cell>{item.madeBy ?? "—"}</s-table-cell>
-                        <s-table-cell>{item.notes ?? "—"}</s-table-cell>
-                        <s-table-cell>
-                          {format(new Date(item.updatedAt), "MMM d, yyyy HH:mm")}
-                        </s-table-cell>
-                        <s-table-cell>
-                          {stockOrder ? (
-                            <s-stack direction="block" gap="base">
-                              <s-text>In stock</s-text>
-                              <s-text>
-                                Auto-set because Order # is Stock
-                              </s-text>
-                            </s-stack>
-                          ) : (
-                            <Form method="post">
-                              <input type="hidden" name="intent" value="updateStatus" />
-                              <input type="hidden" name="productId" value={selectedProduct.id} />
-                              <input type="hidden" name="itemId" value={item.id} />
-                              <s-stack direction="inline" gap="base">
-                                <s-select
-                                  name="status"
-                                  label="Status"
-                                  labelAccessibilityVisibility="exclusive"
-                                  value={item.status}
-                                >
-                                  {statuses.map((status) => (
-                                    <s-option key={status} value={status}>
-                                      {formatStatus(status)}
-                                    </s-option>
-                                  ))}
-                                </s-select>
-                                <s-button type="submit" variant="secondary">
-                                  Update
-                                </s-button>
-                              </s-stack>
-                            </Form>
-                          )}
-                        </s-table-cell>
-                        <s-table-cell>
-                          <s-button
-                            type="button"
-                            variant="secondary"
-                            onClick={() => {
-                            setEditingItemId(item.id);
-                            setEditStatus(item.status);
-                            setEditSourceType(item.sourceType);
-                          }}
-                          >
-                            Edit
-                          </s-button>
-                        </s-table-cell>
-                        <s-table-cell>
-                          <Form
-                            method="post"
-                            onSubmit={(e) => {
-                              if (
-                                !confirm(
-                                  "Delete this local item from the app database? This does not affect Shopify.",
-                                )
-                              ) {
-                                e.preventDefault();
-                              }
-                            }}
-                          >
-                            <input type="hidden" name="intent" value="deleteItem" />
-                            <input type="hidden" name="productId" value={selectedProduct.id} />
-                            <input type="hidden" name="itemId" value={item.id} />
-                            <s-button type="submit" variant="secondary">
-                              Delete item
-                            </s-button>
-                          </Form>
-                        </s-table-cell>
-                      </s-table-row>
-                    );
-                  })}
-                </s-table-body>
-              </s-table>
+              <ResizableListsTable
+                storageKey={`lists-table-columns:${selectedCategory.id}`}
+                columns={DEFAULT_LISTS_TABLE_COLUMNS}
+                rows={tableRows}
+              />
             )}
           </s-section>
         </>
       )}
 
-      {!selectedProduct && productId && (
-        <s-banner tone="warning" heading="Product not found">
-          The selected product was not found for this shop.
+      {!selectedCategory && categoryId && (
+        <s-banner tone="warning" heading="Product category not found">
+          The selected product category was not found for this shop.
         </s-banner>
       )}
     </s-page>

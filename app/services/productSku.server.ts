@@ -1,5 +1,6 @@
 import db from "../db.server";
 import { createAuditLog } from "./audit.server";
+import { ensureProductCategoryByName } from "./productCategory.server";
 import { normalizeSku, pickCanonicalProduct } from "../utils/sku";
 
 export async function findConflictingProduct(
@@ -23,6 +24,7 @@ export async function ensureProductForSku(
   shopId: string,
   rawSku: string,
   productName?: string,
+  categoryName?: string,
 ): Promise<{ id: string; created: boolean; sku: string }> {
   const normalizedSku = normalizeSku(rawSku);
   if (!normalizedSku) {
@@ -64,6 +66,8 @@ export async function ensureProductForSku(
       });
     }
 
+    await assignCategoryToProduct(shopId, product.id, categoryName);
+
     return { id: product.id, created: false, sku: normalizedSku };
   }
 
@@ -84,5 +88,38 @@ export async function ensureProductForSku(
     metadata: { sku: normalizedSku, name: product.name },
   });
 
+  await assignCategoryToProduct(shopId, product.id, categoryName);
+
   return { id: product.id, created: true, sku: normalizedSku };
+}
+
+async function assignCategoryToProduct(
+  shopId: string,
+  productId: string,
+  categoryName?: string,
+) {
+  if (!categoryName?.trim()) return;
+
+  const category = await ensureProductCategoryByName(shopId, categoryName);
+  if (!category) return;
+
+  await db.product.update({
+    where: { id: productId },
+    data: {
+      productCategoryId: category.id,
+      category: category.name,
+    },
+  });
+
+  await createAuditLog({
+    shopId,
+    action: "product.assigned_to_category",
+    entity: "Product",
+    entityId: productId,
+    metadata: {
+      categoryId: category.id,
+      categoryName: category.name,
+      source: "import",
+    },
+  });
 }

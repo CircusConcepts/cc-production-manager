@@ -34,13 +34,51 @@ model Shop {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  products      Product[]
-  items         SerializedItem[]
-  orders        ProductionOrder[]
-  orderLines    ProductionOrderLine[]
-  importBatches ImportBatch[]
-  webhookEvents WebhookEvent[]
-  auditLogs     AuditLog[]
+  products          Product[]
+  items             SerializedItem[]
+  orders            ProductionOrder[]
+  orderLines        ProductionOrderLine[]
+  importBatches     ImportBatch[]
+  webhookEvents     WebhookEvent[]
+  auditLogs         AuditLog[]
+  colors            Color[]
+  productCategories ProductCategory[]
+}
+
+model ProductCategory {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  name   String
+  notes  String?
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@unique([shopId, name])
+  @@index([shopId, active])
+}
+
+model Color {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  name   String
+  hex    String?
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items SerializedItem[]
+
+  @@unique([shopId, name])
+  @@index([shopId, active])
 }
 
 model Product {
@@ -53,6 +91,9 @@ model Product {
   category String?
   notes    String?
   active   Boolean @default(true)
+
+  productCategoryId String?
+  productCategory   ProductCategory? @relation(fields: [productCategoryId], references: [id], onDelete: SetNull)
 
   shopifyProductGid   String?
   shopifyVariantGid   String?
@@ -68,6 +109,7 @@ model Product {
 
   @@unique([shopId, sku])
   @@index([shopId, name])
+  @@index([shopId, productCategoryId])
 }
 
 model SerializedItem {
@@ -88,6 +130,8 @@ model SerializedItem {
 
   madeBy      String?
   color       String?
+  colorId     String?
+  colorRef    Color?  @relation(fields: [colorId], references: [id], onDelete: SetNull)
   size        String?
   qcBy        String?
   qcAt        DateTime?
@@ -101,6 +145,7 @@ model SerializedItem {
   @@index([shopId, status])
   @@index([shopId, orderNumber])
   @@index([productId])
+  @@index([colorId])
 }
 
 model ProductionOrder {

@@ -212,6 +212,10 @@ export default function HistoricalCsvImportPage() {
             Employee: employee, made by, operator, worker
           </s-list-item>
           <s-list-item>
+            Product category: category, product category, item category, type,
+            product type
+          </s-list-item>
+          <s-list-item>
             Color: color, colour, item color, item colour
           </s-list-item>
           <s-list-item>Size: size, item size, product size</s-list-item>
