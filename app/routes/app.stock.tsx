@@ -4,6 +4,7 @@ import { useLoaderData } from "react-router";
 
 import db from "../db.server";
 import { getOrCreateShop } from "../services/shop.server";
+import { skuMatchesSearch } from "../utils/sku";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -48,7 +49,6 @@ export default function StockPage() {
     if (!q) return stockRows;
     return stockRows.filter((row) => {
       const haystack = [
-        row.sku,
         row.productName,
         row.serialNumber,
         row.color,
@@ -59,7 +59,8 @@ export default function StockPage() {
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
-      return haystack.includes(q);
+
+      return skuMatchesSearch(row.sku, q) || haystack.includes(q);
     });
   }, [stockRows, search]);
 

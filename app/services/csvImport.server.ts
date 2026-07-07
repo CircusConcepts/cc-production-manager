@@ -5,6 +5,8 @@ import { z } from "zod";
 
 import db from "../db.server";
 import { resolveDefaultStatus } from "../utils/itemStatus";
+import { normalizeSku } from "../utils/sku";
+import { ensureProductForSku } from "./productSku.server";
 import { createAuditLog } from "./audit.server";
 
 export type ImportMode = "skip" | "update" | "fail";
@@ -231,7 +233,7 @@ function normalizeRawRow(
 
   return {
     rowNumber,
-    sku: sku ?? "",
+    sku: normalizeSku(sku ?? ""),
     productName: getValueByPossibleHeaders(record, NAME_HEADERS),
     serialNumber: serialNumber ?? "",
     orderNumber: getValueByPossibleHeaders(record, ORDER_HEADERS),
@@ -329,51 +331,6 @@ export function validateRows(rows: NormalizedCsvRow[]): {
   return { validRows, errors };
 }
 
-async function ensureProduct(
-  shopId: string,
-  sku: string,
-  productName?: string,
-): Promise<{ id: string; created: boolean }> {
-  const existing = await db.product.findUnique({
-    where: { shopId_sku: { shopId, sku } },
-  });
-
-  if (existing) {
-    const shouldUpdateName =
-      productName &&
-      productName !== sku &&
-      (!existing.name || existing.name === existing.sku);
-
-    if (shouldUpdateName) {
-      await db.product.update({
-        where: { id: existing.id },
-        data: { name: productName },
-      });
-    }
-
-    return { id: existing.id, created: false };
-  }
-
-  const product = await db.product.create({
-    data: {
-      shopId,
-      sku,
-      name: productName || sku,
-      active: true,
-    },
-  });
-
-  await createAuditLog({
-    shopId,
-    action: "PRODUCT_CREATED_FROM_IMPORT",
-    entity: "Product",
-    entityId: product.id,
-    metadata: { sku, name: product.name },
-  });
-
-  return { id: product.id, created: true };
-}
-
 async function processChunk({
   shopId,
   rows,
@@ -403,7 +360,11 @@ async function processChunk({
 
   for (const row of rows) {
     try {
-      const product = await ensureProduct(shopId, row.sku, row.productName);
+      const product = await ensureProductForSku(
+        shopId,
+        row.sku,
+        row.productName,
+      );
       const existing = existingSerials.get(row.serialNumber);
 
       if (!existing) {

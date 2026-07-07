@@ -6,7 +6,9 @@ import { Form, useActionData, useLoaderData } from "react-router";
 
 import db from "../db.server";
 import { createAuditLog } from "../services/audit.server";
+import { findConflictingProduct } from "../services/productSku.server";
 import { getOrCreateShop } from "../services/shop.server";
+import { normalizeSku, skuMatchesSearch } from "../utils/sku";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -47,20 +49,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = formData.get("intent");
 
   if (intent === "create") {
-    const sku = String(formData.get("sku") ?? "").trim();
+    const normalizedSku = normalizeSku(String(formData.get("sku") ?? ""));
     const name = String(formData.get("name") ?? "").trim();
     const category = String(formData.get("category") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
     const active = formData.get("active") === "on";
 
-    if (!sku) return { error: "SKU is required." };
+    if (!normalizedSku) return { error: "SKU is required." };
     if (!name) return { error: "Name is required." };
+
+    const conflict = await findConflictingProduct(shop.id, normalizedSku);
+    if (conflict) {
+      return {
+        error: `A product with SKU ${normalizedSku} already exists.`,
+      };
+    }
 
     try {
       const product = await db.product.create({
         data: {
           shopId: shop.id,
-          sku,
+          sku: normalizedSku,
           name,
           category: category || null,
           notes: notes || null,
@@ -73,17 +82,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         action: "product.created",
         entity: "Product",
         entityId: product.id,
-        metadata: { sku, name, category: category || null },
+        metadata: { sku: normalizedSku, name, category: category || null },
       });
 
-      return { success: `Product "${sku}" created. This does not affect Shopify.` };
+      return {
+        success: `Product "${normalizedSku}" created. This does not affect Shopify.`,
+      };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       ) {
         return {
-          error: `SKU "${sku}" already exists for this shop.`,
+          error: `A product with SKU ${normalizedSku} already exists.`,
         };
       }
       throw error;
@@ -113,13 +124,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "updateProduct") {
     const productId = String(formData.get("productId") ?? "");
-    const sku = String(formData.get("sku") ?? "").trim();
+    const normalizedSku = normalizeSku(String(formData.get("sku") ?? ""));
     const name = String(formData.get("name") ?? "").trim();
     const category = String(formData.get("category") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
     const active = formData.get("active") === "on";
 
-    if (!sku) return { error: "SKU is required." };
+    if (!normalizedSku) return { error: "SKU is required." };
     if (!name) return { error: "Name is required." };
 
     const product = await db.product.findFirst({
@@ -127,6 +138,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!product) return { error: "Product not found." };
+
+    const conflict = await findConflictingProduct(
+      shop.id,
+      normalizedSku,
+      product.id,
+    );
+    if (conflict) {
+      return {
+        error: `A product with SKU ${normalizedSku} already exists.`,
+      };
+    }
 
     const before = {
       sku: product.sku,
@@ -140,7 +162,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await db.product.update({
         where: { id: product.id },
         data: {
-          sku,
+          sku: normalizedSku,
           name,
           category: category || null,
           notes: notes || null,
@@ -156,7 +178,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         metadata: {
           before,
           after: {
-            sku,
+            sku: normalizedSku,
             name,
             category: category || null,
             notes: notes || null,
@@ -165,14 +187,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
-      return { success: `Product "${sku}" updated. This does not affect Shopify.` };
+      return {
+        success: `Product "${normalizedSku}" updated. This does not affect Shopify.`,
+      };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       ) {
         return {
-          error: `SKU "${sku}" already exists for this shop.`,
+          error: `A product with SKU ${normalizedSku} already exists.`,
         };
       }
       throw error;
@@ -302,7 +326,6 @@ export default function ProductsPage() {
     return products.filter((product) => {
       const activeLabel = product.active ? "active" : "inactive";
       const haystack = [
-        product.sku,
         product.name,
         product.category,
         activeLabel,
@@ -310,7 +333,11 @@ export default function ProductsPage() {
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
-      return haystack.includes(q);
+
+      return (
+        skuMatchesSearch(product.sku, q) ||
+        haystack.includes(q.toLowerCase())
+      );
     });
   }, [products, search]);
 
@@ -329,8 +356,9 @@ export default function ProductsPage() {
 
       <s-section heading="About products">
         <s-text>
-          Products are stored only in this app database. Creating, editing, or
-          deleting a product here does not create or change any Shopify product.
+          Products are stored only in this app database. SKUs are saved in
+          uppercase. Creating, editing, or deleting a product here does not
+          create or change any Shopify product.
         </s-text>
       </s-section>
 

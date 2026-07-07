@@ -194,6 +194,9 @@ export default function HistoricalCsvImportPage() {
         <s-unordered-list>
           <s-list-item>SKU: sku, product sku, code, product code</s-list-item>
           <s-list-item>
+            SKUs are normalized to uppercase (for example, wt08 becomes WT08).
+          </s-list-item>
+          <s-list-item>
             Product name: name, product name, description
           </s-list-item>
           <s-list-item>
