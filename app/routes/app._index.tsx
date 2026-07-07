@@ -45,11 +45,11 @@ export default function Dashboard() {
       <s-section heading="Overview">
         <s-stack direction="inline" gap="base">
           <s-box padding="base" borderWidth="base" borderRadius="base">
-            <s-heading>Production SKUs</s-heading>
+            <s-heading>Products</s-heading>
             <s-text>{data.productCount}</s-text>
           </s-box>
           <s-box padding="base" borderWidth="base" borderRadius="base">
-            <s-heading>Serialized Items</s-heading>
+            <s-heading>List items</s-heading>
             <s-text>{data.itemCount}</s-text>
           </s-box>
           <s-box padding="base" borderWidth="base" borderRadius="base">

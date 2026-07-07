@@ -73,10 +73,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         action: "product.created",
         entity: "Product",
         entityId: product.id,
-        metadata: { sku, name },
+        metadata: { sku, name, category: category || null },
       });
 
-      return { success: `Production SKU "${sku}" created.` };
+      return { success: `Product "${sku}" created. This does not affect Shopify.` };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -98,7 +98,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!product) {
-      return { error: "Production SKU not found." };
+      return { error: "Product not found." };
     }
 
     await db.product.update({
@@ -107,7 +107,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     return {
-      success: `Production SKU "${product.sku}" marked as ${product.active ? "inactive" : "active"}.`,
+      success: `Product "${product.sku}" marked ${product.active ? "inactive" : "active"}. This does not affect Shopify.`,
     };
   }
 
@@ -126,7 +126,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id: productId, shopId: shop.id },
     });
 
-    if (!product) return { error: "Production SKU not found." };
+    if (!product) return { error: "Product not found." };
 
     const before = {
       sku: product.sku,
@@ -165,7 +165,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
-      return { success: `Production SKU "${sku}" updated.` };
+      return { success: `Product "${sku}" updated. This does not affect Shopify.` };
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -187,12 +187,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       include: { _count: { select: { items: true } } },
     });
 
-    if (!product) return { error: "Production SKU not found." };
+    if (!product) return { error: "Product not found." };
 
     if (product._count.items > 0) {
       return {
         error:
-          "Cannot delete this SKU because it has serialized items. Deactivate it instead.",
+          "Cannot delete this product because it has list items. Use \"Delete product + local list items\" instead.",
       };
     }
 
@@ -204,12 +204,87 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       metadata: {
         sku: product.sku,
         name: product.name,
+        category: product.category,
+        deletedItemCount: 0,
       },
     });
 
     await db.product.delete({ where: { id: product.id } });
 
-    return { success: `Production SKU "${product.sku}" deleted from app database.` };
+    return {
+      success: `Product "${product.sku}" deleted from app database. This does not affect Shopify.`,
+    };
+  }
+
+  if (intent === "deleteProductWithItems") {
+    const productId = String(formData.get("productId") ?? "");
+
+    const product = await db.product.findFirst({
+      where: { id: productId, shopId: shop.id },
+      include: { _count: { select: { items: true } } },
+    });
+
+    if (!product) return { error: "Product not found." };
+
+    const itemCount = product._count.items;
+
+    await createAuditLog({
+      shopId: shop.id,
+      action: "product.delete_with_items.started",
+      entity: "Product",
+      entityId: product.id,
+      metadata: {
+        productId: product.id,
+        sku: product.sku,
+        name: product.name,
+        category: product.category,
+        deletedItemCount: itemCount,
+      },
+    });
+
+    const deletedItemCount = await db.$transaction(async (tx) => {
+      const deleteItemsResult = await tx.serializedItem.deleteMany({
+        where: { productId: product.id, shopId: shop.id },
+      });
+
+      await tx.product.delete({
+        where: { id: product.id },
+      });
+
+      return deleteItemsResult.count;
+    });
+
+    await createAuditLog({
+      shopId: shop.id,
+      action: "serialized_items.bulk_deleted_for_product",
+      entity: "Product",
+      entityId: product.id,
+      metadata: {
+        productId: product.id,
+        sku: product.sku,
+        name: product.name,
+        category: product.category,
+        deletedItemCount,
+      },
+    });
+
+    await createAuditLog({
+      shopId: shop.id,
+      action: "product.deleted",
+      entity: "Product",
+      entityId: product.id,
+      metadata: {
+        productId: product.id,
+        sku: product.sku,
+        name: product.name,
+        category: product.category,
+        deletedItemCount,
+      },
+    });
+
+    return {
+      success: `Product "${product.sku}" and ${deletedItemCount} local list item(s) deleted from app database. This does not affect Shopify.`,
+    };
   }
 
   return { error: "Unknown action." };
@@ -240,7 +315,7 @@ export default function ProductsPage() {
   }, [products, search]);
 
   return (
-    <s-page heading="Production SKUs">
+    <s-page heading="Products">
       {actionData?.error && (
         <s-banner tone="critical" heading="Could not save">
           {actionData.error}
@@ -252,15 +327,14 @@ export default function ProductsPage() {
         </s-banner>
       )}
 
-      <s-section heading="About production SKUs">
+      <s-section heading="About products">
         <s-text>
-          Production SKUs are stored only in this app database. Creating,
-          editing, or deleting a production SKU here does not create or change
-          any Shopify product.
+          Products are stored only in this app database. Creating, editing, or
+          deleting a product here does not create or change any Shopify product.
         </s-text>
       </s-section>
 
-      <s-section heading="Add production SKU">
+      <s-section heading="Add product">
         <Form method="post">
           <input type="hidden" name="intent" value="create" />
           <s-stack direction="block" gap="base">
@@ -284,15 +358,15 @@ export default function ProductsPage() {
             <s-text-area name="notes" label="Notes" />
             <s-checkbox name="active" label="Active" defaultChecked />
             <s-button type="submit" variant="primary">
-              Create production SKU
+              Create product
             </s-button>
           </s-stack>
         </Form>
       </s-section>
 
-      <s-section heading={`All production SKUs (${filteredProducts.length})`}>
+      <s-section heading={`All products (${filteredProducts.length})`}>
         <s-text-field
-          label="Search production SKUs"
+          label="Search products"
           value={search}
           onInput={(e) => setSearch(e.currentTarget.value)}
           autocomplete="off"
@@ -300,11 +374,10 @@ export default function ProductsPage() {
 
         {products.length === 0 ? (
           <s-text>
-            No production SKUs yet. Add your first production SKU using the form
-            above.
+            No products yet. Add your first product using the form above.
           </s-text>
         ) : filteredProducts.length === 0 ? (
-          <s-text>No production SKUs match your search.</s-text>
+          <s-text>No products match your search.</s-text>
         ) : (
           <>
             {editingProductId && (() => {
@@ -368,18 +441,18 @@ export default function ProductsPage() {
             })()}
 
             <s-table>
-            <s-table-header-row>
-              <s-table-header>SKU</s-table-header>
-              <s-table-header>Name</s-table-header>
-              <s-table-header>Category</s-table-header>
-              <s-table-header>Active</s-table-header>
-              <s-table-header>In Stock</s-table-header>
-              <s-table-header>Updated</s-table-header>
-              <s-table-header>Actions</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {filteredProducts.map((product) => (
-                <s-table-row key={product.id}>
+              <s-table-header-row>
+                <s-table-header>SKU</s-table-header>
+                <s-table-header>Name</s-table-header>
+                <s-table-header>Category</s-table-header>
+                <s-table-header>Active</s-table-header>
+                <s-table-header>In Stock</s-table-header>
+                <s-table-header>Updated</s-table-header>
+                <s-table-header>Actions</s-table-header>
+              </s-table-header-row>
+              <s-table-body>
+                {filteredProducts.map((product) => (
+                  <s-table-row key={product.id}>
                     <s-table-cell>{product.sku}</s-table-cell>
                     <s-table-cell>{product.name}</s-table-cell>
                     <s-table-cell>{product.category ?? "—"}</s-table-cell>
@@ -404,30 +477,55 @@ export default function ProductsPage() {
                             {product.active ? "Deactivate" : "Activate"}
                           </s-button>
                         </Form>
-                        <Form
-                          method="post"
-                          onSubmit={(e) => {
-                            if (
-                              !confirm(
-                                "Delete this production SKU from the app database? This does not affect Shopify.",
-                              )
-                            ) {
-                              e.preventDefault();
-                            }
-                          }}
-                        >
-                          <input type="hidden" name="intent" value="deleteProduct" />
-                          <input type="hidden" name="productId" value={product.id} />
-                          <s-button type="submit" variant="secondary">
-                            Delete
-                          </s-button>
-                        </Form>
+                        {product.itemCount === 0 ? (
+                          <Form
+                            method="post"
+                            onSubmit={(e) => {
+                              if (
+                                !confirm(
+                                  "Delete this product from the app database? This does not affect Shopify.",
+                                )
+                              ) {
+                                e.preventDefault();
+                              }
+                            }}
+                          >
+                            <input type="hidden" name="intent" value="deleteProduct" />
+                            <input type="hidden" name="productId" value={product.id} />
+                            <s-button type="submit" variant="secondary">
+                              Delete
+                            </s-button>
+                          </Form>
+                        ) : (
+                          <Form
+                            method="post"
+                            onSubmit={(e) => {
+                              if (
+                                !confirm(
+                                  "This will delete the local product and all local list items attached to it. This does not affect Shopify.",
+                                )
+                              ) {
+                                e.preventDefault();
+                              }
+                            }}
+                          >
+                            <input
+                              type="hidden"
+                              name="intent"
+                              value="deleteProductWithItems"
+                            />
+                            <input type="hidden" name="productId" value={product.id} />
+                            <s-button type="submit" variant="secondary">
+                              Delete product + local list items
+                            </s-button>
+                          </Form>
+                        )}
                       </s-stack>
-                  </s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
+                    </s-table-cell>
+                  </s-table-row>
+                ))}
+              </s-table-body>
+            </s-table>
           </>
         )}
       </s-section>

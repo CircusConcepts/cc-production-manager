@@ -86,7 +86,7 @@ export default function StockPage() {
           <s-table>
             <s-table-header-row>
               <s-table-header>SKU</s-table-header>
-              <s-table-header>Production SKU Name</s-table-header>
+              <s-table-header>Product Name</s-table-header>
               <s-table-header>Serial Number</s-table-header>
               <s-table-header>Color</s-table-header>
               <s-table-header>Size</s-table-header>

@@ -4,9 +4,9 @@ import { useMemo, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   Form,
-  Link,
   useActionData,
   useLoaderData,
+  useNavigate,
   useSearchParams,
 } from "react-router";
 
@@ -21,6 +21,42 @@ import {
 } from "../utils/itemStatus";
 import { authenticate } from "../shopify.server";
 
+const CATEGORY_ALL = "__all__";
+const CATEGORY_UNCATEGORIZED = "__uncategorized__";
+
+function productMatchesCategory(
+  product: { category: string | null },
+  categoryFilter: string,
+): boolean {
+  if (categoryFilter === CATEGORY_ALL) return true;
+  if (categoryFilter === CATEGORY_UNCATEGORIZED) return !product.category?.trim();
+  return product.category?.trim() === categoryFilter;
+}
+
+function buildItemsUrl({
+  category,
+  productId,
+}: {
+  category: string;
+  productId?: string;
+}) {
+  const params = new URLSearchParams();
+  if (category !== CATEGORY_ALL) params.set("category", category);
+  if (productId) params.set("productId", productId);
+  const query = params.toString();
+  return query ? `/app/items?${query}` : "/app/items";
+}
+
+function formatProductOptionLabel(product: {
+  sku: string;
+  name: string;
+  active: boolean;
+  _count: { items: number };
+}): string {
+  const inactiveSuffix = product.active ? "" : " [inactive]";
+  return `${product.sku} — ${product.name} (${product._count.items} items)${inactiveSuffix}`;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await getOrCreateShop(session.shop);
@@ -34,6 +70,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: true,
       sku: true,
       name: true,
+      category: true,
+      active: true,
       _count: { select: { items: true } },
     },
   });
@@ -103,12 +141,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const productId = String(formData.get("productId") ?? "").trim();
 
   if (!productId) {
-    return { error: "Production SKU selection is required." };
+    return { error: "Product selection is required." };
   }
 
   const product = await getProductForShop(shop.id, productId);
   if (!product) {
-    return { error: "Production SKU not found." };
+    return { error: "Product not found." };
   }
 
   if (intent === "create") {
@@ -377,14 +415,15 @@ function matchesItemSearch(
   return haystack.includes(q);
 }
 
-export default function SerializedItemsPage() {
+export default function ListsPage() {
   const { products, selectedProduct, items, statuses } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const productId = searchParams.get("productId") ?? "";
+  const categoryParam = searchParams.get("category") ?? CATEGORY_ALL;
 
-  const [productSearch, setProductSearch] = useState("");
   const [itemSearch, setItemSearch] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editStatus, setEditStatus] = useState("IN_STOCK");
@@ -393,14 +432,28 @@ export default function SerializedItemsPage() {
   const [createStatus, setCreateStatus] = useState("IN_STOCK");
   const createIsStock = isStockOrderNumber(createOrderNumber);
 
-  const filteredProducts = useMemo(() => {
-    const q = productSearch.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(
-      (p) =>
-        p.sku.toLowerCase().includes(q) || p.name.toLowerCase().includes(q),
-    );
-  }, [products, productSearch]);
+  const categoryOptions = useMemo(() => {
+    const named = new Set<string>();
+    let hasUncategorized = false;
+
+    for (const product of products) {
+      if (product.category?.trim()) {
+        named.add(product.category.trim());
+      } else {
+        hasUncategorized = true;
+      }
+    }
+
+    return {
+      named: [...named].sort((a, b) => a.localeCompare(b)),
+      hasUncategorized,
+    };
+  }, [products]);
+
+  const filteredProducts = useMemo(
+    () => products.filter((product) => productMatchesCategory(product, categoryParam)),
+    [products, categoryParam],
+  );
 
   const filteredItems = useMemo(() => {
     const q = itemSearch.trim();
@@ -408,8 +461,27 @@ export default function SerializedItemsPage() {
     return items.filter((item) => matchesItemSearch(item, q));
   }, [items, itemSearch]);
 
+  const handleCategoryChange = (value: string) => {
+    const currentProduct = products.find((product) => product.id === productId);
+    const keepProductId =
+      currentProduct && productMatchesCategory(currentProduct, value)
+        ? productId
+        : undefined;
+
+    navigate(buildItemsUrl({ category: value, productId: keepProductId }));
+  };
+
+  const handleProductChange = (value: string) => {
+    navigate(
+      buildItemsUrl({
+        category: categoryParam,
+        productId: value || undefined,
+      }),
+    );
+  };
+
   return (
-    <s-page heading="Serialized Items">
+    <s-page heading="Lists">
       {actionData?.error && (
         <s-banner tone="critical" heading="Could not save">
           {actionData.error}
@@ -421,47 +493,48 @@ export default function SerializedItemsPage() {
         </s-banner>
       )}
 
-      <s-section heading="Select production SKU">
+      <s-section heading="Select product">
         <s-text>
-          Choose a production SKU to manage its serialized items. All changes
-          are saved only in this app database — never in Shopify.
+          Choose a product to manage its list items. All changes are saved only
+          in this app database — never in Shopify.
         </s-text>
-        <s-text-field
-          label="Search production SKUs"
-          value={productSearch}
-          onInput={(e) => setProductSearch(e.currentTarget.value)}
-          autocomplete="off"
-        />
+
         {products.length === 0 ? (
           <s-text>
-            Add a production SKU first, then you can register serialized items
-            here.
+            Add a product first on the Products page, then you can register list
+            items here.
           </s-text>
-        ) : filteredProducts.length === 0 ? (
-          <s-text>No production SKUs match your search.</s-text>
         ) : (
-          <s-table>
-            <s-table-header-row>
-              <s-table-header>SKU</s-table-header>
-              <s-table-header>Name</s-table-header>
-              <s-table-header>Items</s-table-header>
-              <s-table-header>Open</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {filteredProducts.map((product) => (
-                <s-table-row key={product.id}>
-                  <s-table-cell>{product.sku}</s-table-cell>
-                  <s-table-cell>{product.name}</s-table-cell>
-                  <s-table-cell>{product._count.items}</s-table-cell>
-                  <s-table-cell>
-                    <Link to={`/app/items?productId=${product.id}`}>
-                      Open
-                    </Link>
-                  </s-table-cell>
-                </s-table-row>
+          <s-stack direction="block" gap="base">
+            <s-select
+              label="Product category"
+              value={categoryParam}
+              onChange={(e) => handleCategoryChange(e.currentTarget.value)}
+            >
+              <s-option value={CATEGORY_ALL}>All categories</s-option>
+              {categoryOptions.named.map((category) => (
+                <s-option key={category} value={category}>
+                  {category}
+                </s-option>
               ))}
-            </s-table-body>
-          </s-table>
+              {categoryOptions.hasUncategorized && (
+                <s-option value={CATEGORY_UNCATEGORIZED}>Uncategorized</s-option>
+              )}
+            </s-select>
+
+            <s-select
+              label="Product"
+              value={productId}
+              onChange={(e) => handleProductChange(e.currentTarget.value)}
+            >
+              <s-option value="">Select a product</s-option>
+              {filteredProducts.map((product) => (
+                <s-option key={product.id} value={product.id}>
+                  {formatProductOptionLabel(product)}
+                </s-option>
+              ))}
+            </s-select>
+          </s-stack>
         )}
       </s-section>
 
@@ -629,7 +702,7 @@ export default function SerializedItemsPage() {
             })()}
 
             {filteredItems.length === 0 ? (
-              <s-text>No items for this production SKU yet.</s-text>
+              <s-text>No list items for this product yet.</s-text>
             ) : (
               <s-table>
                 <s-table-header-row>
@@ -726,7 +799,7 @@ export default function SerializedItemsPage() {
                             <input type="hidden" name="productId" value={selectedProduct.id} />
                             <input type="hidden" name="itemId" value={item.id} />
                             <s-button type="submit" variant="secondary">
-                              Delete local item
+                              Delete item
                             </s-button>
                           </Form>
                         </s-table-cell>
@@ -741,8 +814,8 @@ export default function SerializedItemsPage() {
       )}
 
       {!selectedProduct && productId && (
-        <s-banner tone="warning" heading="Production SKU not found">
-          The selected production SKU was not found for this shop.
+        <s-banner tone="warning" heading="Product not found">
+          The selected product was not found for this shop.
         </s-banner>
       )}
     </s-page>
