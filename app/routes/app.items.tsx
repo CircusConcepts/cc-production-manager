@@ -48,6 +48,7 @@ type ItemRow = {
   size: string | null;
   madeBy: string | null;
   notes: string | null;
+  completedAt: string | null;
   updatedAt: string;
 };
 
@@ -60,7 +61,36 @@ type RowDraft = {
   size: string;
   madeBy: string;
   notes: string;
+  completedAt: string;
 };
+
+function toDateInputValue(value: string | null): string {
+  if (!value) return "";
+  return format(new Date(value), "yyyy-MM-dd");
+}
+
+function parseDateInput(
+  value: string,
+): Date | null | { error: string } {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const match = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
+  if (!match) return { error: "Production date is invalid." };
+
+  const [year, month, day] = trimmed.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return { error: "Production date is invalid." };
+  }
+
+  return date;
+}
 
 function itemToDraft(item: ItemRow): RowDraft {
   return {
@@ -72,6 +102,7 @@ function itemToDraft(item: ItemRow): RowDraft {
     size: item.size ?? "",
     madeBy: item.madeBy ?? "",
     notes: item.notes ?? "",
+    completedAt: toDateInputValue(item.completedAt),
   };
 }
 
@@ -207,6 +238,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         size: item.size,
         madeBy: item.madeBy,
         notes: item.notes,
+        completedAt: item.completedAt ? item.completedAt.toISOString() : null,
         updatedAt: item.updatedAt.toISOString(),
       }));
     }
@@ -294,6 +326,7 @@ async function saveSerializedItemUpdate({
   size,
   madeBy,
   notes,
+  completedAtRaw,
 }: {
   shopId: string;
   categoryId: string;
@@ -306,10 +339,16 @@ async function saveSerializedItemUpdate({
   size: string;
   madeBy: string;
   notes: string;
+  completedAtRaw: string;
 }): Promise<ActionResult> {
   if (!productId) return { error: "Product selection is required." };
   if (!serialNumber) return { error: "Serial number is required." };
   if (!isItemStatus(statusInput)) return { error: "Invalid status." };
+
+  const parsedCompletedAt = parseDateInput(completedAtRaw);
+  if (parsedCompletedAt && typeof parsedCompletedAt === "object" && "error" in parsedCompletedAt) {
+    return { error: parsedCompletedAt.error, itemId };
+  }
 
   const validated = await validateCategoryProduct(shopId, categoryId, productId);
   if ("error" in validated) return { error: validated.error };
@@ -356,6 +395,7 @@ async function saveSerializedItemUpdate({
     size: item.size,
     madeBy: item.madeBy,
     notes: item.notes,
+    completedAt: item.completedAt,
   };
 
   try {
@@ -371,6 +411,7 @@ async function saveSerializedItemUpdate({
         size: size || null,
         madeBy: madeBy || null,
         notes: notes || null,
+        completedAt: parsedCompletedAt as Date | null,
       },
     });
 
@@ -396,6 +437,7 @@ async function saveSerializedItemUpdate({
           size: size || null,
           madeBy: madeBy || null,
           notes: notes || null,
+          completedAt: parsedCompletedAt as Date | null,
         },
       },
     });
@@ -457,10 +499,16 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ActionRes
     const madeBy = String(formData.get("madeBy") ?? "").trim();
     const notes = String(formData.get("notes") ?? "").trim();
     const colorIdRaw = String(formData.get("colorId") ?? "");
+    const completedAtRaw = String(formData.get("completedAt") ?? "").trim();
 
     if (!productId) return { error: "Product selection is required." };
     if (!serialNumber) return { error: "Serial number is required." };
     if (!isItemStatus(statusInput)) return { error: "Invalid status." };
+
+    const parsedCompletedAt = parseDateInput(completedAtRaw);
+    if (parsedCompletedAt && typeof parsedCompletedAt === "object" && "error" in parsedCompletedAt) {
+      return { error: parsedCompletedAt.error };
+    }
 
     const validated = await validateCategoryProduct(shop.id, categoryId, productId);
     if ("error" in validated) return { error: validated.error };
@@ -499,6 +547,7 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ActionRes
           size: size || null,
           madeBy: madeBy || null,
           notes: notes || null,
+          completedAt: parsedCompletedAt as Date | null,
         },
       });
 
@@ -518,6 +567,9 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ActionRes
           color: colorResult.colorName,
           size,
           employee: madeBy,
+          completedAt: parsedCompletedAt
+            ? (parsedCompletedAt as Date).toISOString()
+            : null,
         },
       });
 
@@ -550,6 +602,7 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ActionRes
       size: String(formData.get("size") ?? "").trim(),
       madeBy: String(formData.get("madeBy") ?? "").trim(),
       notes: String(formData.get("notes") ?? "").trim(),
+      completedAtRaw: String(formData.get("completedAt") ?? "").trim(),
     });
   }
 
@@ -727,6 +780,7 @@ function InlineListsTable({
           size: draft.size,
           madeBy: draft.madeBy,
           notes: draft.notes,
+          completedAt: draft.completedAt,
         },
         { method: "post" },
       );
@@ -852,6 +906,22 @@ function InlineListsTable({
               />
             ) : (
               <span className={tableStyles.readonlyCell}>{item.size || "—"}</span>
+            ),
+            productionDate: isEditing ? (
+              <input
+                type="date"
+                className={tableStyles.cellInput}
+                value={draft.completedAt}
+                onChange={(event) =>
+                  updateDraft(item, { completedAt: event.currentTarget.value })
+                }
+              />
+            ) : (
+              <span className={tableStyles.readonlyCell}>
+                {item.completedAt
+                  ? format(new Date(item.completedAt), "MMM d, yyyy")
+                  : "—"}
+              </span>
             ),
             employee: isEditing ? (
               <input
@@ -998,7 +1068,7 @@ function InlineListsTable({
   return (
     <div className="appTableArea">
       <ResizableListsTable
-        storageKey={`lists-table-columns:v2:${categoryId}`}
+        storageKey={`lists-table-columns:v3:${categoryId}`}
         columns={DEFAULT_LISTS_TABLE_COLUMNS}
         rows={tableRows}
       />
@@ -1020,9 +1090,29 @@ export default function ListsPage() {
   const categoryId = searchParams.get("categoryId") ?? "";
 
   const [itemSearch, setItemSearch] = useState("");
+  const [isAddItemOpen, setIsAddItemOpen] = useState(false);
   const [createOrderNumber, setCreateOrderNumber] = useState("");
   const [createStatus, setCreateStatus] = useState("IN_STOCK");
+  const [createCompletedAt, setCreateCompletedAt] = useState("");
+  const [createFormKey, setCreateFormKey] = useState(0);
   const createIsStock = isStockOrderNumber(createOrderNumber);
+
+  useEffect(() => {
+    setIsAddItemOpen(false);
+    setCreateOrderNumber("");
+    setCreateStatus("IN_STOCK");
+    setCreateCompletedAt("");
+  }, [selectedCategory?.id]);
+
+  useEffect(() => {
+    if (!actionData?.success?.includes("created")) return;
+
+    setIsAddItemOpen(false);
+    setCreateOrderNumber("");
+    setCreateStatus("IN_STOCK");
+    setCreateCompletedAt("");
+    setCreateFormKey((current) => current + 1);
+  }, [actionData?.success]);
 
   const filteredItems = useMemo(() => {
     const safeItems = Array.isArray(items) ? items : [];
@@ -1106,70 +1196,98 @@ export default function ListsPage() {
             </s-section>
 
             <s-section heading={`Add item — ${selectedCategory.name}`}>
-              {categoryProducts.length === 0 ? (
-                <s-text>Add products to this category first.</s-text>
-              ) : colors.length === 0 ? (
-                <s-text>Define colors first on the Products page.</s-text>
-              ) : (
-                <Form method="post">
-                  <input type="hidden" name="intent" value="create" />
-                  <input type="hidden" name="categoryId" value={selectedCategory.id} />
-                  <s-stack direction="block" gap="base">
-                    <s-select name="productId" label="Product" value="">
-                      <s-option value="">Select product</s-option>
-                      {categoryProducts.map((product) => (
-                        <s-option key={product.id} value={product.id}>
-                          {product.sku} — {product.name}
-                        </s-option>
-                      ))}
-                    </s-select>
-                    <s-text-field
-                      name="serialNumber"
-                      label="Serial number"
-                      required
-                      autocomplete="off"
-                    />
-                    <s-text-field
-                      name="orderNumber"
-                      label="Order number"
-                      value={createOrderNumber}
-                      onInput={(event) => setCreateOrderNumber(event.currentTarget.value)}
-                      autocomplete="off"
-                    />
-                    {createIsStock && (
-                      <s-text>
-                        Auto-set because Order # is Stock — status will be In stock.
-                      </s-text>
-                    )}
-                    <s-select
-                      name="status"
-                      label="Status"
-                      value={createIsStock ? "IN_STOCK" : createStatus}
-                      disabled={createIsStock}
-                      onChange={(event) => setCreateStatus(event.currentTarget.value)}
-                    >
-                      {statuses.map((status) => (
-                        <s-option key={status} value={status}>
-                          {formatStatus(status as ItemStatus)}
-                        </s-option>
-                      ))}
-                    </s-select>
-                    <s-select name="colorId" label="Color" value="">
-                      <s-option value="">Select color</s-option>
-                      {colors.map((color) => (
-                        <s-option key={color.id} value={color.id}>
-                          {color.name}
-                        </s-option>
-                      ))}
-                    </s-select>
-                    <s-text-field name="size" label="Size" autocomplete="off" />
-                    <s-text-field name="madeBy" label="Employee" autocomplete="off" />
-                    <s-text-area name="notes" label="Notes" />
-                    <s-button type="submit" variant="primary">
-                      Add item
-                    </s-button>
-                  </s-stack>
-                </Form>
+              <s-button
+                type="button"
+                variant="secondary"
+                onClick={() => setIsAddItemOpen((open) => !open)}
+              >
+                {isAddItemOpen ? "Hide add item form" : "Add item"}
+              </s-button>
+
+              {isAddItemOpen && (
+                <>
+                  {categoryProducts.length === 0 ? (
+                    <s-text>Add products to this category first.</s-text>
+                  ) : colors.length === 0 ? (
+                    <s-text>Define colors first on the Products page.</s-text>
+                  ) : (
+                    <Form method="post" key={createFormKey}>
+                      <input type="hidden" name="intent" value="create" />
+                      <input type="hidden" name="categoryId" value={selectedCategory.id} />
+                      <s-stack direction="block" gap="base">
+                        <s-select name="productId" label="Product" value="">
+                          <s-option value="">Select product</s-option>
+                          {categoryProducts.map((product) => (
+                            <s-option key={product.id} value={product.id}>
+                              {product.sku} — {product.name}
+                            </s-option>
+                          ))}
+                        </s-select>
+                        <s-text-field
+                          name="serialNumber"
+                          label="Serial number"
+                          required
+                          autocomplete="off"
+                        />
+                        <label>
+                          <s-text>Production date</s-text>
+                          <input
+                            type="date"
+                            name="completedAt"
+                            className={tableStyles.cellInput}
+                            value={createCompletedAt}
+                            onChange={(event) =>
+                              setCreateCompletedAt(event.currentTarget.value)
+                            }
+                          />
+                        </label>
+                        <s-text-field
+                          name="orderNumber"
+                          label="Order number"
+                          value={createOrderNumber}
+                          onInput={(event) =>
+                            setCreateOrderNumber(event.currentTarget.value)
+                          }
+                          autocomplete="off"
+                        />
+                        {createIsStock && (
+                          <s-text>
+                            Auto-set because Order # is Stock — status will be In stock.
+                          </s-text>
+                        )}
+                        <s-select
+                          name="status"
+                          label="Status"
+                          value={createIsStock ? "IN_STOCK" : createStatus}
+                          disabled={createIsStock}
+                          onChange={(event) =>
+                            setCreateStatus(event.currentTarget.value)
+                          }
+                        >
+                          {statuses.map((status) => (
+                            <s-option key={status} value={status}>
+                              {formatStatus(status as ItemStatus)}
+                            </s-option>
+                          ))}
+                        </s-select>
+                        <s-select name="colorId" label="Color" value="">
+                          <s-option value="">Select color</s-option>
+                          {colors.map((color) => (
+                            <s-option key={color.id} value={color.id}>
+                              {color.name}
+                            </s-option>
+                          ))}
+                        </s-select>
+                        <s-text-field name="size" label="Size" autocomplete="off" />
+                        <s-text-field name="madeBy" label="Employee" autocomplete="off" />
+                        <s-text-area name="notes" label="Notes" />
+                        <s-button type="submit" variant="primary">
+                          Add item
+                        </s-button>
+                      </s-stack>
+                    </Form>
+                  )}
+                </>
               )}
             </s-section>
 

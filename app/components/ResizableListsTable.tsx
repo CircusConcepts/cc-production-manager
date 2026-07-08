@@ -236,6 +236,7 @@ export const DEFAULT_LISTS_TABLE_COLUMNS: ResizableColumn[] = [
   { key: "orderNumber", label: "Order #", width: 130 },
   { key: "color", label: "Color", width: 120 },
   { key: "size", label: "Size", width: 100 },
+  { key: "productionDate", label: "Production Date", width: 150 },
   { key: "employee", label: "Employee", width: 140 },
   { key: "notes", label: "Notes", width: 260, wrap: true },
   { key: "updated", label: "Updated", width: 160 },

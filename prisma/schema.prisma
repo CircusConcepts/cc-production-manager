@@ -131,7 +131,7 @@ model SerializedItem {
   madeBy      String?
   color       String?
   colorId     String?
-  colorRef    Color?  @relation(fields: [colorId], references: [id], onDelete: SetNull)
+  colorRef    Color?    @relation(fields: [colorId], references: [id], onDelete: SetNull)
   size        String?
   qcBy        String?
   qcAt        DateTime?
