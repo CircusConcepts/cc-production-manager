@@ -190,17 +190,22 @@ function OrderPdfPreviewPanel({
         </div>
 
         <s-stack direction="inline" gap="base">
-          <s-button
+          <button
             type="button"
-            variant="primary"
+            className="orderPrimaryButton"
             onClick={onCreate}
             disabled={isCreating}
           >
             {isCreating ? "Creating order..." : "Create production order"}
-          </s-button>
-          <s-button type="button" variant="secondary" onClick={onCancel}>
+          </button>
+          <button
+            type="button"
+            className="orderSecondaryButton"
+            onClick={onCancel}
+            disabled={isCreating}
+          >
             Cancel preview / choose another PDF
-          </s-button>
+          </button>
         </s-stack>
       </s-stack>
     </s-section>
@@ -305,13 +310,18 @@ export default function ProductionOrdersPage() {
 
           {!preview ? (
             <s-stack direction="block" gap="base">
-              <s-text-field
-                label="Order number"
-                name="orderNumber"
-                value={orderNumber}
-                onInput={(event) => setOrderNumber(event.currentTarget.value)}
-                autocomplete="off"
-              />
+              <label className="orderItemField">
+                <span className="orderItemLabel">Order number</span>
+                <input
+                  className="orderItemNativeInput"
+                  type="text"
+                  name="orderNumber"
+                  value={orderNumber}
+                  onChange={(event) => setOrderNumber(event.currentTarget.value)}
+                  autoComplete="off"
+                  required
+                />
+              </label>
 
               <label className="orderItemField">
                 <span className="orderItemLabel">Order PDF</span>
@@ -332,17 +342,28 @@ export default function ProductionOrdersPage() {
 
               <div className="orderDocumentsHelp">
                 Upload one Circus Concepts order PDF with selectable text.
-                Maximum 10 MB.
+                Maximum 10 MB. Enter the order number, choose the PDF, then
+                click Read order PDF.
               </div>
 
-              <s-button
+              <button
                 type="button"
-                variant="primary"
-                disabled={!orderNumber.trim() || !selectedPdf || isParsing}
-                onClick={() => submitPdfIntent("parseOrderPdf")}
+                className="orderPrimaryButton"
+                disabled={isParsing}
+                onClick={() => {
+                  if (!orderNumber.trim()) {
+                    window.alert("Enter the order number first.");
+                    return;
+                  }
+                  if (!selectedPdf) {
+                    window.alert("Select the Circus Concepts order PDF first.");
+                    return;
+                  }
+                  submitPdfIntent("parseOrderPdf");
+                }}
               >
                 {isParsing ? "Reading order PDF..." : "Read order PDF"}
-              </s-button>
+              </button>
             </s-stack>
           ) : (
             <OrderPdfPreviewPanel

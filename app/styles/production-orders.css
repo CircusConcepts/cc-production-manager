@@ -111,6 +111,36 @@
   padding-left: 18px;
 }
 
+.orderPrimaryButton,
+.orderSecondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.orderPrimaryButton {
+  border: 1px solid #1a1a1a;
+  background: #1a1a1a;
+  color: #ffffff;
+}
+
+.orderPrimaryButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.orderSecondaryButton {
+  border: 1px solid #c9cccf;
+  background: #ffffff;
+  color: #202223;
+}
+
 @media (max-width: 900px) {
   .orderItemRow {
     grid-template-columns: 1fr;
