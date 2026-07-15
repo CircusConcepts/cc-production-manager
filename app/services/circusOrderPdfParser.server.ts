@@ -1,5 +1,3 @@
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-
 import {
   groupTextItemsIntoLines,
   hasUsablePdfTextLayer,
@@ -30,6 +28,39 @@ type PdfJsTextItem = {
   width?: number;
   height?: number;
 };
+
+type PdfJsModule = {
+  getDocument: (options: {
+    data: Uint8Array;
+    disableFontFace?: boolean;
+    useSystemFonts?: boolean;
+  }) => {
+    promise: Promise<{
+      numPages: number;
+      getPage: (pageNumber: number) => Promise<{
+        getTextContent: (options?: {
+          includeMarkedContent?: boolean;
+          disableNormalization?: boolean;
+        }) => Promise<{ items: unknown[] }>;
+      }>;
+    }>;
+  };
+};
+
+async function loadPdfJs(): Promise<PdfJsModule> {
+  // Load at runtime so Vite SSR does not bundle the deep package entry.
+  try {
+    return (await import(
+      /* @vite-ignore */
+      "pdfjs-dist/legacy/build/pdf.mjs"
+    )) as PdfJsModule;
+  } catch {
+    return (await import(
+      /* @vite-ignore */
+      "pdfjs-dist/build/pdf.mjs"
+    )) as PdfJsModule;
+  }
+}
 
 function isPdfJsTextItem(value: unknown): value is PdfJsTextItem {
   return (
@@ -83,6 +114,7 @@ export async function extractPdfTextItems(
 > {
   let pdf;
   try {
+    const { getDocument } = await loadPdfJs();
     const loadingTask = getDocument({
       data: toUint8Array(data),
       disableFontFace: true,

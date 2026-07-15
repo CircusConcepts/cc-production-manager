@@ -56,7 +56,9 @@ export default defineConfig({
     assetsInlineLimit: 0,
   },
   ssr: {
-    noExternal: ["pdfjs-dist"],
+    // Keep pdfjs as a runtime Node dependency. Bundling the deep
+    // legacy entry breaks the Render SSR build.
+    external: ["pdfjs-dist", "pdfjs-dist/legacy/build/pdf.mjs", "pdfjs-dist/build/pdf.mjs"],
   },
   optimizeDeps: {
     include: ["@shopify/app-bridge-react"],
