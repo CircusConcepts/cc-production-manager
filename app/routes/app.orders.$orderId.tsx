@@ -7,6 +7,7 @@ import {
   useActionData,
   useLoaderData,
   useNavigation,
+  useSearchParams,
 } from "react-router";
 
 import { ProductionOrderItemsEditor } from "../components/ProductionOrderItemsEditor";
@@ -35,6 +36,28 @@ import db from "../db.server";
 import "../styles/production-orders.css";
 
 type ActionResult = { error?: string; success?: string };
+
+type LineCustomProperties = {
+  source?: string;
+  pdfDescription?: string;
+  pdfModel?: string;
+  options?: Array<{ label: string; value: string }>;
+};
+
+function formatLineOptions(customProperties: unknown): string {
+  if (!customProperties || typeof customProperties !== "object") {
+    return "—";
+  }
+
+  const props = customProperties as LineCustomProperties;
+  if (!props.options || props.options.length === 0) {
+    return "—";
+  }
+
+  return props.options
+    .map((option) => `${option.label}: ${option.value}`)
+    .join("; ");
+}
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -88,6 +111,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         colorName: line.colorName,
         size: line.size ?? "",
         linkedItemCount: line._count.items,
+        customProperties: line.customProperties,
       })),
       documents: order.documents.map((document) => ({
         id: document.id,
@@ -213,7 +237,9 @@ export default function ProductionOrderDetailPage() {
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const [searchParams] = useSearchParams();
   const [isEditing, setIsEditing] = useState(false);
+  const importedFromPdf = searchParams.get("imported") === "1";
 
   const isSavingOrder =
     navigation.state === "submitting" &&
@@ -243,6 +269,13 @@ export default function ProductionOrderDetailPage() {
         {actionData?.success && (
           <s-banner tone="success" heading="Saved">
             {actionData.success}
+          </s-banner>
+        )}
+
+        {importedFromPdf && (
+          <s-banner tone="success" heading="Order imported from PDF">
+            Review the extracted details and update the due date or employee when
+            needed.
           </s-banner>
         )}
 
@@ -305,7 +338,6 @@ export default function ProductionOrderDetailPage() {
                       type="date"
                       name="dueDate"
                       defaultValue={order.dueDate}
-                      required
                     />
                   </label>
                   <label className="orderItemField">
@@ -377,7 +409,11 @@ export default function ProductionOrderDetailPage() {
               </div>
               <div className="orderDetailField">
                 <s-text>Customer address</s-text>
-                <s-text>{order.customerAddress || "—"}</s-text>
+                <s-text>
+                  <span className="orderAddressMultiline">
+                    {order.customerAddress || "—"}
+                  </span>
+                </s-text>
               </div>
               <div className="orderDetailField">
                 <s-text>Order date</s-text>
@@ -427,6 +463,7 @@ export default function ProductionOrderDetailPage() {
                   <s-table-header>Quantity</s-table-header>
                   <s-table-header>Color</s-table-header>
                   <s-table-header>Size</s-table-header>
+                  <s-table-header>Options</s-table-header>
                   <s-table-header>Linked items</s-table-header>
                 </s-table-header-row>
                 <s-table-body>
@@ -437,6 +474,9 @@ export default function ProductionOrderDetailPage() {
                       <s-table-cell>{line.quantity}</s-table-cell>
                       <s-table-cell>{line.colorName ?? "—"}</s-table-cell>
                       <s-table-cell>{line.size || "—"}</s-table-cell>
+                      <s-table-cell>
+                        {formatLineOptions(line.customProperties)}
+                      </s-table-cell>
                       <s-table-cell>{line.linkedItemCount}</s-table-cell>
                     </s-table-row>
                   ))}

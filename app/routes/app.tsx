@@ -21,7 +21,7 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Dashboard</s-link>
         <s-link href="/app/products">Products</s-link>
-        <s-link href="/app/orders">New Production Orders</s-link>
+        <s-link href="/app/orders">New Production Order</s-link>
         <s-link href="/app/items">Lists</s-link>
         <s-link href="/app/stock">Stock</s-link>
         <s-link href="/app/import">CSV Import</s-link>

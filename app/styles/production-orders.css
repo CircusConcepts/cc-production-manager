@@ -102,6 +102,15 @@
   align-items: center;
 }
 
+.orderAddressMultiline {
+  white-space: pre-line;
+}
+
+.orderOptionsList {
+  margin: 0;
+  padding-left: 18px;
+}
+
 @media (max-width: 900px) {
   .orderItemRow {
     grid-template-columns: 1fr;

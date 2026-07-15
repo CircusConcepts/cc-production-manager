@@ -1,26 +1,20 @@
 import { format } from "date-fns";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
-  Form,
   Link,
   redirect,
-  useActionData,
+  useFetcher,
   useLoaderData,
-  useNavigation,
 } from "react-router";
 
-import { ProductionOrderItemsEditor } from "../components/ProductionOrderItemsEditor";
 import db from "../db.server";
-import { validateOrderDocumentUploads } from "../services/orderDocumentStorage.server";
 import {
-  collectDocumentFiles,
-  createProductionOrderWithLines,
-  getDistinctEmployeeNames,
-  parseOrderItemsJson,
-  resolveOrderLinesForShop,
-  validateProductionOrderForm,
-} from "../services/productionOrder.server";
+  createOrderPdfImport,
+  previewOrderPdfImport,
+  readOrderPdfFromFormData,
+  type OrderPdfPreview,
+} from "../services/circusOrderPdfImport.server";
 import { getOrCreateShop } from "../services/shop.server";
 import {
   compareDueDateAsc,
@@ -28,49 +22,32 @@ import {
   formatProductLineSummary,
   formatProductionOrderStatus,
   getProductionOrderStatusOptions,
-  getTodayCalendarDate,
   isProductionOrderOverdue,
 } from "../utils/productionOrder";
 import { authenticate } from "../shopify.server";
 import "../styles/production-orders.css";
 
-type ActionResult = { error?: string };
+type ParseActionResult = { error?: string; preview?: OrderPdfPreview };
+type CreateActionResult = { error?: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await getOrCreateShop(session.shop);
 
-  const [products, colors, employeeNames, orders] = await Promise.all([
-    db.product.findMany({
-      where: { shopId: shop.id, active: true },
-      orderBy: [{ sku: "asc" }, { name: "asc" }],
-      select: { id: true, sku: true, name: true },
-    }),
-    db.color.findMany({
-      where: { shopId: shop.id, active: true },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    }),
-    getDistinctEmployeeNames(shop.id),
-    db.productionOrder.findMany({
-      where: { shopId: shop.id },
-      include: {
-        lines: {
-          select: { sku: true, productName: true, quantity: true },
-          orderBy: { createdAt: "asc" },
-        },
-        _count: { select: { documents: true } },
+  const orders = await db.productionOrder.findMany({
+    where: { shopId: shop.id },
+    include: {
+      lines: {
+        select: { sku: true, productName: true, quantity: true },
+        orderBy: { createdAt: "asc" },
       },
-      orderBy: [{ updatedAt: "desc" }],
-    }),
-  ]);
+      _count: { select: { documents: true } },
+    },
+    orderBy: [{ updatedAt: "desc" }],
+  });
 
   return {
-    products,
-    colors,
-    employeeNames,
     statusOptions: getProductionOrderStatusOptions(),
-    today: getTodayCalendarDate(),
     orders: orders
       .map((order) => ({
         id: order.id,
@@ -95,81 +72,174 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = await getOrCreateShop(session.shop);
   const formData = await request.formData();
   const intent = String(formData.get("intent") ?? "");
+  const manualOrderNumber = String(formData.get("orderNumber") ?? "");
+  const pdfFile = readOrderPdfFromFormData(formData);
 
-  if (intent !== "createOrder") {
-    return { error: "Unknown action." } satisfies ActionResult;
-  }
+  if (intent === "parseOrderPdf") {
+    if (!pdfFile) {
+      return { error: "A PDF order file is required." } satisfies ParseActionResult;
+    }
 
-  const itemsResult = parseOrderItemsJson(
-    String(formData.get("orderItemsJson") ?? "[]"),
-  );
-  if (!itemsResult.ok) {
-    return { error: itemsResult.error } satisfies ActionResult;
-  }
-
-  const validation = validateProductionOrderForm(
-    {
-      orderNumber: String(formData.get("orderNumber") ?? ""),
-      customerName: String(formData.get("customerName") ?? ""),
-      customerAddress: String(formData.get("customerAddress") ?? ""),
-      orderNote: String(formData.get("orderNote") ?? ""),
-      orderDate: String(formData.get("orderDate") ?? ""),
-      dueDate: String(formData.get("dueDate") ?? ""),
-      employee: String(formData.get("employee") ?? ""),
-      status: String(formData.get("status") ?? ""),
-    },
-    itemsResult.items,
-  );
-
-  if (!validation.ok) {
-    return { error: validation.error } satisfies ActionResult;
-  }
-
-  const resolvedLines = await resolveOrderLinesForShop({
-    shopId: shop.id,
-    items: validation.data.items,
-  });
-  if (!resolvedLines.ok) {
-    return { error: resolvedLines.error } satisfies ActionResult;
-  }
-
-  const documentFiles = collectDocumentFiles(formData);
-  const documentValidation = await validateOrderDocumentUploads(documentFiles);
-  if (!documentValidation.ok) {
-    return { error: documentValidation.error } satisfies ActionResult;
-  }
-
-  try {
-    const result = await createProductionOrderWithLines({
+    const result = await previewOrderPdfImport({
       shopId: shop.id,
-      orderData: validation.data,
-      lines: resolvedLines.lines,
-      documents: documentValidation.documents,
+      manualOrderNumber,
+      pdfFile,
     });
 
     if (!result.ok) {
-      return { error: result.error } satisfies ActionResult;
+      return { error: result.error } satisfies ParseActionResult;
     }
 
-    return redirect(`/app/orders/${result.order.id}`);
-  } catch {
-    return {
-      error: "Could not create the production order. Please try again.",
-    } satisfies ActionResult;
+    return { preview: result.preview } satisfies ParseActionResult;
   }
+
+  if (intent === "createOrderFromPdf") {
+    if (!pdfFile) {
+      return { error: "A PDF order file is required." } satisfies CreateActionResult;
+    }
+
+    try {
+      const result = await createOrderPdfImport({
+        shopId: shop.id,
+        manualOrderNumber,
+        pdfFile,
+      });
+
+      if (!result.ok) {
+        return { error: result.error } satisfies CreateActionResult;
+      }
+
+      return redirect(`/app/orders/${result.order.id}?imported=1`);
+    } catch {
+      return {
+        error: "Could not create the production order. Please try again.",
+      } satisfies CreateActionResult;
+    }
+  }
+
+  return { error: "Unknown action." } satisfies ParseActionResult;
 };
 
-export default function ProductionOrdersPage() {
-  const { products, colors, employeeNames, statusOptions, orders, today } =
-    useLoaderData<typeof loader>();
-  const actionData = useActionData<typeof action>();
-  const navigation = useNavigation();
-  const isSubmitting =
-    navigation.state === "submitting" &&
-    navigation.formData?.get("intent") === "createOrder";
+function OrderPdfPreviewPanel({
+  preview,
+  onCancel,
+  onCreate,
+  isCreating,
+}: {
+  preview: OrderPdfPreview;
+  onCancel: () => void;
+  onCreate: () => void;
+  isCreating: boolean;
+}) {
+  return (
+    <s-section heading="Review extracted order">
+      <s-stack direction="block" gap="base">
+        <s-text>PDF file: {preview.pdfFilename}</s-text>
+        <div className="orderDetailGrid">
+          <div className="orderDetailField">
+            <s-text>Order number</s-text>
+            <s-text>{preview.orderNumber}</s-text>
+          </div>
+          <div className="orderDetailField">
+            <s-text>Order date</s-text>
+            <s-text>{preview.orderDate}</s-text>
+          </div>
+          <div className="orderDetailField">
+            <s-text>Customer name</s-text>
+            <s-text>{preview.customerName}</s-text>
+          </div>
+          <div className="orderDetailField">
+            <s-text>Shipping address</s-text>
+            <s-text>
+              <span className="orderAddressMultiline">
+                {preview.customerAddress}
+              </span>
+            </s-text>
+          </div>
+        </div>
 
+        <div className="appTableArea">
+          <s-table>
+            <s-table-header-row>
+              <s-table-header>SKU</s-table-header>
+              <s-table-header>Product</s-table-header>
+              <s-table-header>Quantity</s-table-header>
+              <s-table-header>Color</s-table-header>
+              <s-table-header>Size</s-table-header>
+              <s-table-header>Other options</s-table-header>
+            </s-table-header-row>
+            <s-table-body>
+              {preview.lines.map((line) => (
+                <s-table-row key={`${line.sku}-${line.quantity}`}>
+                  <s-table-cell>{line.sku}</s-table-cell>
+                  <s-table-cell>{line.productName}</s-table-cell>
+                  <s-table-cell>{line.quantity}</s-table-cell>
+                  <s-table-cell>{line.colorName ?? "—"}</s-table-cell>
+                  <s-table-cell>{line.size ?? "—"}</s-table-cell>
+                  <s-table-cell>
+                    {line.options.length > 0
+                      ? line.options
+                          .map((option) => `${option.label}: ${option.value}`)
+                          .join("; ")
+                      : "—"}
+                  </s-table-cell>
+                </s-table-row>
+              ))}
+            </s-table-body>
+          </s-table>
+        </div>
+
+        <s-stack direction="inline" gap="base">
+          <s-button
+            type="button"
+            variant="primary"
+            onClick={onCreate}
+            disabled={isCreating}
+          >
+            {isCreating ? "Creating order..." : "Create production order"}
+          </s-button>
+          <s-button type="button" variant="secondary" onClick={onCancel}>
+            Cancel preview / choose another PDF
+          </s-button>
+        </s-stack>
+      </s-stack>
+    </s-section>
+  );
+}
+
+export default function ProductionOrdersPage() {
+  const { statusOptions, orders } = useLoaderData<typeof loader>();
+  const parseFetcher = useFetcher<typeof action>();
+  const createFetcher = useFetcher<typeof action>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [orderNumber, setOrderNumber] = useState("");
+  const [selectedPdf, setSelectedPdf] = useState<File | null>(null);
+  const [preview, setPreview] = useState<OrderPdfPreview | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
+
+  const isParsing =
+    parseFetcher.state !== "idle" &&
+    parseFetcher.formData?.get("intent") === "parseOrderPdf";
+  const isCreating =
+    createFetcher.state !== "idle" &&
+    createFetcher.formData?.get("intent") === "createOrderFromPdf";
+
+  useEffect(() => {
+    if (parseFetcher.data && "preview" in parseFetcher.data && parseFetcher.data.preview) {
+      setPreview(parseFetcher.data.preview);
+    }
+  }, [parseFetcher.data]);
+
+  const parseError =
+    parseFetcher.data && "error" in parseFetcher.data
+      ? parseFetcher.data.error
+      : undefined;
+  const createError =
+    createFetcher.data && "error" in createFetcher.data
+      ? createFetcher.data.error
+      : undefined;
 
   const filteredOrders = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -194,131 +264,94 @@ export default function ProductionOrdersPage() {
     });
   }, [orders, search, statusFilter]);
 
+  function submitPdfIntent(intent: "parseOrderPdf" | "createOrderFromPdf") {
+    if (!selectedPdf) return;
+
+    const formData = new FormData();
+    formData.set("intent", intent);
+    formData.set("orderNumber", orderNumber);
+    formData.set("orderPdf", selectedPdf);
+
+    const fetcher = intent === "parseOrderPdf" ? parseFetcher : createFetcher;
+    fetcher.submit(formData, {
+      method: "post",
+      encType: "multipart/form-data",
+    });
+  }
+
+  function resetImportForm() {
+    setPreview(null);
+    setSelectedPdf(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
   return (
     <s-page heading="Production Orders">
       <div className="appWideSection">
-        {actionData?.error && (
-          <s-banner tone="critical" heading="Could not save order">
-            {actionData.error}
+        {(parseError || createError) && (
+          <s-banner tone="critical" heading="Could not import order">
+            {parseError ?? createError}
           </s-banner>
         )}
 
         <s-section heading="New Production Order">
-          <Form method="post" encType="multipart/form-data">
-            <input type="hidden" name="intent" value="createOrder" />
+          <s-text>
+            Enter the order number and upload the Circus Concepts order PDF.
+            Customer, address, date, products, quantities, and recognized
+            product options will be filled automatically.
+          </s-text>
 
+          {!preview ? (
             <s-stack direction="block" gap="base">
-              <div className="orderFormGrid">
-                <s-text-field
-                  label="Order number"
-                  name="orderNumber"
-                  required
-                  autocomplete="off"
-                />
-                <s-text-field
-                  label="Customer name"
-                  name="customerName"
-                  required
-                  autocomplete="off"
-                />
-                <s-text-field
-                  label="Customer address"
-                  name="customerAddress"
-                  autocomplete="off"
-                />
-                <label className="orderItemField">
-                  <span className="orderItemLabel">Order date</span>
-                  <input
-                    className="orderItemNativeInput"
-                    type="date"
-                    name="orderDate"
-                    defaultValue={today}
-                    required
-                  />
-                </label>
-                <label className="orderItemField">
-                  <span className="orderItemLabel">Due date</span>
-                  <input
-                    className="orderItemNativeInput"
-                    type="date"
-                    name="dueDate"
-                    required
-                  />
-                </label>
-                <label className="orderItemField">
-                  <span className="orderItemLabel">Employee</span>
-                  <input
-                    className="orderItemNativeInput"
-                    type="text"
-                    name="employee"
-                    list="employee-suggestions"
-                    autoComplete="off"
-                  />
-                </label>
-                <datalist id="employee-suggestions">
-                  {employeeNames.map((name) => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
-                <label className="orderItemField">
-                  <span className="orderItemLabel">Status</span>
-                  <select
-                    className="orderItemNativeSelect"
-                    name="status"
-                    defaultValue="OPEN"
-                    required
-                  >
-                    {statusOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
               <s-text-field
-                label="Order note"
-                name="orderNote"
+                label="Order number"
+                name="orderNumber"
+                value={orderNumber}
+                onInput={(event) => setOrderNumber(event.currentTarget.value)}
                 autocomplete="off"
               />
 
-              <s-section heading="Order items">
-                {products.length === 0 ? (
-                  <s-text>
-                    Add active products on the Products page before creating an
-                    order.
-                  </s-text>
-                ) : (
-                  <ProductionOrderItemsEditor
-                    products={products}
-                    colors={colors}
-                  />
-                )}
-              </s-section>
-
-              <s-section heading="Order Documents">
+              <label className="orderItemField">
+                <span className="orderItemLabel">Order PDF</span>
                 <input
+                  ref={fileInputRef}
+                  className="orderItemNativeInput"
                   type="file"
-                  name="documents"
-                  multiple
-                  accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf"
+                  name="orderPdf"
+                  accept=".pdf,application/pdf"
+                  required
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    setSelectedPdf(file);
+                    setPreview(null);
+                  }}
                 />
-                <div className="orderDocumentsHelp">
-                  Accepted files: JPG, PNG, WebP, PDF. Maximum 10 MB per file.
-                  Maximum 10 documents per order. Combined upload limit is 50 MB.
-                </div>
-              </s-section>
+              </label>
+
+              <div className="orderDocumentsHelp">
+                Upload one Circus Concepts order PDF with selectable text.
+                Maximum 10 MB.
+              </div>
 
               <s-button
-                type="submit"
+                type="button"
                 variant="primary"
-                disabled={products.length === 0 || isSubmitting}
+                disabled={!orderNumber.trim() || !selectedPdf || isParsing}
+                onClick={() => submitPdfIntent("parseOrderPdf")}
               >
-                {isSubmitting ? "Saving order..." : "Create production order"}
+                {isParsing ? "Reading order PDF..." : "Read order PDF"}
               </s-button>
             </s-stack>
-          </Form>
+          ) : (
+            <OrderPdfPreviewPanel
+              preview={preview}
+              isCreating={isCreating}
+              onCancel={resetImportForm}
+              onCreate={() => submitPdfIntent("createOrderFromPdf")}
+            />
+          )}
         </s-section>
 
         <s-section heading="Production Orders">
@@ -357,7 +390,10 @@ export default function ProductionOrdersPage() {
           </div>
 
           {orders.length === 0 ? (
-            <s-text>No production orders yet. Create one above.</s-text>
+            <s-text>
+              No production orders yet. Import one from a Circus Concepts order
+              PDF above.
+            </s-text>
           ) : filteredOrders.length === 0 ? (
             <s-text>No production orders match your filters.</s-text>
           ) : (

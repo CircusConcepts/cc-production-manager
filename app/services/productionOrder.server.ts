@@ -2,7 +2,13 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 import db from "../db.server";
+import { normalizeSku } from "../utils/sku";
 import { createAuditLog } from "./audit.server";
+import {
+  CIRCUS_ORDER_PDF_PARSER_VERSION,
+  type ParsedCircusOrderLine,
+  type ParsedCircusOrderPdf,
+} from "./circusOrderPdfParser.server";
 import {
   deleteOrderDocument,
   saveOrderDocument,
@@ -60,7 +66,7 @@ export type ActionValidationResult =
         customerAddress: string | null;
         orderNote: string | null;
         orderDate: Date;
-        dueDate: Date;
+        dueDate: Date | null;
         employee: string | null;
         status: z.infer<typeof productionOrderStatusSchema>;
         items: ProductionOrderItemInput[];
@@ -102,7 +108,7 @@ export function validateProductionOrderForm(
   items: ProductionOrderItemInput[],
   options?: { requireDueDate?: boolean },
 ): ActionValidationResult {
-  const requireDueDate = options?.requireDueDate ?? true;
+  const requireDueDate = options?.requireDueDate ?? false;
 
   const orderNumber = input.orderNumber.trim();
   const customerName = input.customerName.trim();
@@ -126,26 +132,22 @@ export function validateProductionOrderForm(
     return { ok: false, error: "Order date is invalid." };
   }
 
-  let dueDate: Date;
-  if (requireDueDate) {
-    const dueDateResult = parseCalendarDate(input.dueDate);
-    if (!dueDateResult.ok) {
-      return { ok: false, error: "Due date is required and must be valid." };
-    }
-    dueDate = dueDateResult.date;
-  } else {
-    const dueDateTrimmed = input.dueDate.trim();
-    if (!dueDateTrimmed) {
-      return { ok: false, error: "Due date is required." };
-    }
+  const dueDateTrimmed = input.dueDate.trim();
+  let dueDate: Date | null = null;
+  if (dueDateTrimmed) {
     const dueDateResult = parseCalendarDate(dueDateTrimmed);
     if (!dueDateResult.ok) {
       return { ok: false, error: "Due date is invalid." };
     }
     dueDate = dueDateResult.date;
+  } else if (requireDueDate) {
+    return { ok: false, error: "Due date is required." };
   }
 
-  if (formatCalendarDate(dueDate) < formatCalendarDate(orderDateResult.date)) {
+  if (
+    dueDate &&
+    formatCalendarDate(dueDate) < formatCalendarDate(orderDateResult.date)
+  ) {
     return { ok: false, error: "Due date cannot be before order date." };
   }
 
@@ -211,7 +213,151 @@ type ResolvedLine = {
   colorId: string | null;
   colorName: string | null;
   size: string | null;
+  customProperties: Prisma.InputJsonValue | null;
 };
+
+export type ResolvedPdfImportLine = ResolvedLine & {
+  pdfDescription: string;
+  options: Array<{ label: string; value: string }>;
+};
+
+export async function checkDuplicateProductionOrderNumber(
+  shopId: string,
+  orderNumber: string,
+): Promise<{ ok: false; error: string } | null> {
+  const existing = await db.productionOrder.findFirst({
+    where: { shopId, orderNumber },
+    select: { id: true },
+  });
+  if (existing) {
+    return { ok: false, error: formatDuplicateOrderNumberError() };
+  }
+  return null;
+}
+
+function buildLineCustomProperties(
+  parsedLine: ParsedCircusOrderLine,
+): Prisma.InputJsonValue {
+  const payload: Record<string, unknown> = {
+    source: "circus_order_pdf",
+    pdfDescription: parsedLine.pdfDescription,
+    options: parsedLine.options,
+  };
+
+  if (parsedLine.model) {
+    payload.pdfModel = parsedLine.model;
+  }
+
+  return payload as Prisma.InputJsonValue;
+}
+
+export async function resolveParsedPdfLinesForShop({
+  shopId,
+  lines,
+}: {
+  shopId: string;
+  lines: ParsedCircusOrderLine[];
+}): Promise<
+  | { ok: true; lines: ResolvedPdfImportLine[] }
+  | { ok: false; error: string }
+> {
+  const requestedColors = [
+    ...new Set(
+      lines
+        .map((line) => line.colorName?.trim() ?? "")
+        .filter((name) => name.length > 0),
+    ),
+  ];
+
+  const [products, colors] = await Promise.all([
+    db.product.findMany({
+      where: { shopId, active: true },
+      select: { id: true, sku: true, name: true },
+    }),
+    requestedColors.length > 0
+      ? db.color.findMany({
+          where: { shopId, active: true },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const productBySku = new Map<string, (typeof products)[number]>();
+  for (const product of products) {
+    const key = normalizeSku(product.sku);
+    if (!productBySku.has(key)) {
+      productBySku.set(key, product);
+    }
+  }
+
+  const colorByName = new Map<string, (typeof colors)[number]>();
+  for (const color of colors) {
+    colorByName.set(color.name.trim().toLowerCase(), color);
+  }
+
+  const missingProducts: string[] = [];
+  const missingColors: string[] = [];
+  const resolvedLines: ResolvedPdfImportLine[] = [];
+
+  for (const line of lines) {
+    const normalizedSku = normalizeSku(line.sku);
+    const product = productBySku.get(normalizedSku);
+    if (!product) {
+      missingProducts.push(line.sku);
+      continue;
+    }
+
+    let colorId: string | null = null;
+    let colorName: string | null = null;
+    if (line.colorName) {
+      const color = colorByName.get(line.colorName.trim().toLowerCase());
+      if (!color) {
+        missingColors.push(line.colorName);
+        continue;
+      }
+      colorId = color.id;
+      colorName = color.name;
+    }
+
+    resolvedLines.push({
+      productId: product.id,
+      sku: product.sku,
+      productName: product.name,
+      quantity: line.quantity,
+      colorId,
+      colorName,
+      size: line.size,
+      customProperties: buildLineCustomProperties(line),
+      pdfDescription: line.pdfDescription,
+      options: line.options,
+    });
+  }
+
+  if (missingProducts.length > 0) {
+    const unique = [...new Set(missingProducts)];
+    return {
+      ok: false,
+      error: `The following PDF products do not exist in Products: ${unique.join(", ")}. Add or correct these products before importing this order.`,
+    };
+  }
+
+  if (missingColors.length > 0) {
+    const unique = [...new Set(missingColors)];
+    return {
+      ok: false,
+      error: `The following PDF colors do not exist in Colors: ${unique.join(", ")}. Add or correct these colors before importing this order.`,
+    };
+  }
+
+  if (resolvedLines.length !== lines.length) {
+    return {
+      ok: false,
+      error: "One or more PDF product lines could not be resolved.",
+    };
+  }
+
+  return { ok: true, lines: resolvedLines };
+}
 
 export async function resolveOrderLinesForShop({
   shopId,
@@ -282,6 +428,7 @@ export async function resolveOrderLinesForShop({
       colorId,
       colorName,
       size: item.size || null,
+      customProperties: null,
     });
   }
 
@@ -293,6 +440,7 @@ export async function createProductionOrderWithLines({
   orderData,
   lines,
   documents,
+  auditMetadata,
 }: {
   shopId: string;
   orderData: {
@@ -301,12 +449,13 @@ export async function createProductionOrderWithLines({
     customerAddress: string | null;
     orderNote: string | null;
     orderDate: Date;
-    dueDate: Date;
+    dueDate: Date | null;
     employee: string | null;
     status: z.infer<typeof productionOrderStatusSchema>;
   };
   lines: ResolvedLine[];
   documents: ValidatedOrderDocument[];
+  auditMetadata?: Prisma.InputJsonValue;
 }) {
   const existing = await db.productionOrder.findFirst({
     where: { shopId, orderNumber: orderData.orderNumber },
@@ -338,6 +487,7 @@ export async function createProductionOrderWithLines({
             colorId: line.colorId,
             colorName: line.colorName,
             size: line.size,
+            customProperties: line.customProperties ?? undefined,
           })),
         },
       },
@@ -395,7 +545,14 @@ export async function createProductionOrderWithLines({
         totalQuantity,
         documentCount: documentRows.length,
         orderDate: formatCalendarDate(orderData.orderDate),
-        dueDate: formatCalendarDate(orderData.dueDate),
+        dueDate: orderData.dueDate
+          ? formatCalendarDate(orderData.dueDate)
+          : null,
+        ...(auditMetadata &&
+        typeof auditMetadata === "object" &&
+        !Array.isArray(auditMetadata)
+          ? auditMetadata
+          : {}),
       },
     });
 
@@ -454,7 +611,7 @@ export async function updateProductionOrderWithLines({
     customerAddress: string | null;
     orderNote: string | null;
     orderDate: Date;
-    dueDate: Date;
+    dueDate: Date | null;
     employee: string | null;
     status: z.infer<typeof productionOrderStatusSchema>;
   };
@@ -611,7 +768,9 @@ export async function updateProductionOrderWithLines({
         productLineCount: resolved.lines.length,
         totalQuantity,
         orderDate: formatCalendarDate(orderData.orderDate),
-        dueDate: formatCalendarDate(orderData.dueDate),
+        dueDate: orderData.dueDate
+          ? formatCalendarDate(orderData.dueDate)
+          : null,
       },
     });
 
@@ -779,4 +938,41 @@ export function collectDocumentFiles(formData: FormData): File[] {
     .getAll("documents")
     .filter((entry): entry is File => entry instanceof File && entry.size > 0);
   return files;
+}
+
+export async function createProductionOrderFromParsedPdf({
+  shopId,
+  parsed,
+  resolvedLines,
+  pdfDocument,
+}: {
+  shopId: string;
+  parsed: ParsedCircusOrderPdf;
+  resolvedLines: ResolvedPdfImportLine[];
+  pdfDocument: ValidatedOrderDocument;
+}) {
+  const orderDateResult = parseCalendarDate(parsed.orderDate);
+  if (!orderDateResult.ok) {
+    return { ok: false as const, error: "Order date is invalid." };
+  }
+
+  return createProductionOrderWithLines({
+    shopId,
+    orderData: {
+      orderNumber: parsed.orderNumber,
+      customerName: parsed.customerName,
+      customerAddress: parsed.customerAddress,
+      orderNote: null,
+      orderDate: orderDateResult.date,
+      dueDate: null,
+      employee: null,
+      status: "OPEN",
+    },
+    lines: resolvedLines,
+    documents: [pdfDocument],
+    auditMetadata: {
+      importSource: "circus_order_pdf",
+      parserVersion: CIRCUS_ORDER_PDF_PARSER_VERSION,
+    },
+  });
 }
