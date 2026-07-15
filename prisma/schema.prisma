@@ -38,6 +38,7 @@ model Shop {
   items             SerializedItem[]
   orders            ProductionOrder[]
   orderLines        ProductionOrderLine[]
+  orderDocuments    ProductionOrderDocument[]
   importBatches     ImportBatch[]
   webhookEvents     WebhookEvent[]
   auditLogs         AuditLog[]
@@ -75,7 +76,8 @@ model Color {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  items SerializedItem[]
+  items      SerializedItem[]
+  orderLines ProductionOrderLine[]
 
   @@unique([shopId, name])
   @@index([shopId, active])
@@ -157,13 +159,24 @@ model ProductionOrder {
   orderNumber     String
   status          ProductionOrderStatus @default(OPEN)
 
+  customerName    String?
+  customerAddress String?
+  orderNote       String?
+  orderDate       DateTime  @default(dbgenerated("CURRENT_DATE")) @db.Date
+  dueDate         DateTime? @db.Date
+  employee        String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  lines ProductionOrderLine[]
+  lines     ProductionOrderLine[]
+  documents ProductionOrderDocument[]
 
   @@unique([shopId, orderNumber])
   @@index([shopId, status])
+  @@index([shopId, orderDate])
+  @@index([shopId, dueDate])
+  @@index([shopId, customerName])
 }
 
 model ProductionOrderLine {
@@ -183,6 +196,11 @@ model ProductionOrderLine {
   quantity           Int
   customProperties   Json?
 
+  colorId   String?
+  color     Color?  @relation(fields: [colorId], references: [id], onDelete: SetNull)
+  colorName String?
+  size      String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -190,6 +208,26 @@ model ProductionOrderLine {
 
   @@unique([productionOrderId, shopifyLineItemGid])
   @@index([shopId, sku])
+  @@index([shopId, productionOrderId])
+}
+
+model ProductionOrderDocument {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  productionOrderId String
+  productionOrder   ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  originalName String
+  storageKey   String
+  mimeType     String
+  sizeBytes    Int
+
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, storageKey])
+  @@index([shopId, productionOrderId])
 }
 
 model ImportBatch {

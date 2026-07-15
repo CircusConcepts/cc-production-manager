@@ -1,0 +1,113 @@
+.orderItemsEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.orderItemRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) minmax(100px, 1fr) minmax(140px, 2fr) 90px minmax(140px, 1.5fr) minmax(100px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--p-color-border-secondary, #e3e3e3);
+  border-radius: 8px;
+}
+
+.orderItemField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.orderItemLabel {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.orderItemReadonly {
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--p-color-border-secondary, #e3e3e3);
+  border-radius: 8px;
+  background: var(--p-color-bg-surface-secondary, #f6f6f7);
+  word-break: break-word;
+}
+
+.orderItemActions {
+  display: flex;
+  align-items: end;
+  padding-bottom: 2px;
+}
+
+.orderItemNativeSelect,
+.orderItemNativeInput {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--p-color-border-secondary, #c9cccf);
+  border-radius: 8px;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.orderDocumentsHelp {
+  margin-top: 8px;
+  color: var(--p-color-text-secondary, #616161);
+  font-size: 13px;
+}
+
+.orderFormGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.orderFiltersRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.orderOverdueBadge {
+  color: var(--p-color-text-critical, #8e0b21);
+  font-weight: 600;
+}
+
+.orderDetailGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.orderDetailField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.orderDocumentList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.orderDocumentRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  .orderItemRow {
+    grid-template-columns: 1fr;
+  }
+
+  .orderItemActions {
+    justify-content: flex-start;
+  }
+}

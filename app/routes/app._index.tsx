@@ -4,11 +4,13 @@ import { useLoaderData } from "react-router";
 import appLogo from "../../assets/App Logo.jpg";
 import db from "../db.server";
 import { getOrCreateShop } from "../services/shop.server";
+import { getTodayCalendarDate } from "../utils/productionOrder";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await getOrCreateShop(session.shop);
+  const today = getTodayCalendarDate();
 
   const [
     productCount,
@@ -17,6 +19,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     inProductionCount,
     inQcCount,
     readyCount,
+    openOrderCount,
+    inProgressOrderCount,
+    overdueOrderCount,
   ] = await Promise.all([
     db.product.count({ where: { shopId: shop.id } }),
     db.serializedItem.count({ where: { shopId: shop.id } }),
@@ -26,6 +31,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
     db.serializedItem.count({ where: { shopId: shop.id, status: "QC" } }),
     db.serializedItem.count({ where: { shopId: shop.id, status: "READY" } }),
+    db.productionOrder.count({
+      where: { shopId: shop.id, status: "OPEN" },
+    }),
+    db.productionOrder.count({
+      where: { shopId: shop.id, status: "IN_PROGRESS" },
+    }),
+    db.productionOrder.count({
+      where: {
+        shopId: shop.id,
+        status: { notIn: ["DONE", "CANCELLED"] },
+        dueDate: { lt: new Date(`${today}T00:00:00.000Z`) },
+      },
+    }),
   ]);
 
   return {
@@ -35,6 +53,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     inProductionCount,
     inQcCount,
     readyCount,
+    openOrderCount,
+    inProgressOrderCount,
+    overdueOrderCount,
   };
 };
 
@@ -109,6 +130,18 @@ export default function Dashboard() {
             <s-box padding="base" borderWidth="base" borderRadius="base">
               <s-heading>Ready</s-heading>
               <s-text>{data.readyCount}</s-text>
+            </s-box>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-heading>Open Orders</s-heading>
+              <s-text>{data.openOrderCount}</s-text>
+            </s-box>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-heading>In Progress</s-heading>
+              <s-text>{data.inProgressOrderCount}</s-text>
+            </s-box>
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <s-heading>Overdue</s-heading>
+              <s-text>{data.overdueOrderCount}</s-text>
             </s-box>
           </s-stack>
         </s-section>

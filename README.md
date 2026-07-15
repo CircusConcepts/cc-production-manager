@@ -15,7 +15,7 @@ The app tracks physical manufactured items (ropes, straps, etc.) by serial numbe
 - **CSV imports** write only to PostgreSQL. Uploaded files are parsed in memory and are not stored on disk.
 - **Stock quantity** is never stored directly. It is calculated by counting `SerializedItem` rows where `status = IN_STOCK`.
 - No `read_orders` scope, no order webhooks, and no Shopify product sync are enabled yet.
-- **No customer PII**: no customer names, emails, phones, or addresses stored.
+- **No customer PII**: customer data for production orders (name, address, notes) is stored only in this app's PostgreSQL database for local production management. It is never sent to Shopify.
 
 ## Local development
 
@@ -87,8 +87,28 @@ shopify app dev
 | `SCOPES` | Yes | `read_products` |
 | `NODE_ENV` | Yes | `development` locally, `production` on Render |
 | `PORT` | Render | Set automatically by Render; server listens on this port |
+| `ORDER_UPLOAD_DIR` | Production | Absolute or relative path for production-order document storage. Must point to a Render Persistent Disk mount in production. |
+| `MAX_ORDER_DOCUMENT_BYTES` | No | Per-file upload limit in bytes (default `10485760` / 10 MB) |
+| `MAX_ORDER_DOCUMENTS` | No | Maximum documents per order (default `10`) |
+| `MAX_ORDER_UPLOAD_TOTAL_BYTES` | No | Combined per-request upload limit (default `52428800` / 50 MB) |
 
 See `.env.example` for a starter template.
+
+### Production order documents
+
+Production orders support JPG, PNG, WebP, and PDF attachments. Files are stored on disk under `ORDER_UPLOAD_DIR` using shop- and order-scoped paths. Only a safe relative `storageKey` is saved in PostgreSQL.
+
+**Local development:** defaults to `./storage/order-documents` (gitignored).
+
+**Render production:** attach a **Render Persistent Disk** to the web service before enabling uploads. Set `ORDER_UPLOAD_DIR` to a subdirectory on that mount, for example:
+
+```
+/opt/render/project/src/storage/order-documents
+```
+
+(or the mount path shown in the Render dashboard, such as `/var/data/order-documents`).
+
+A single persistent disk is suitable for the current single-instance deployment. If the app later scales to multiple web instances, replace this filesystem storage with shared object storage (S3, Cloudflare R2, etc.) without changing the database model.
 
 ## Database setup
 
@@ -109,7 +129,7 @@ datasource db {
 - `SerializedItem` — one row per physical item
 - `ImportBatch` — CSV import history
 - `AuditLog` — change history
-- `ProductionOrder` / `ProductionOrderLine` — reserved for future order sync
+- `ProductionOrder` / `ProductionOrderLine` / `ProductionOrderDocument` — local production order management (not synced to Shopify)
 
 ### Migrations
 
@@ -162,8 +182,14 @@ Shopify Admin (embedded) → Render Web Service → Render PostgreSQL
    | `SHOPIFY_APP_URL` | `https://your-service.onrender.com` |
    | `SCOPES` | `read_products` |
    | `NODE_ENV` | `production` |
+   | `ORDER_UPLOAD_DIR` | Path on Render Persistent Disk mount (see above) |
+   | `MAX_ORDER_DOCUMENT_BYTES` | `10485760` (optional) |
+   | `MAX_ORDER_DOCUMENTS` | `10` (optional) |
+   | `MAX_ORDER_UPLOAD_TOTAL_BYTES` | `52428800` (optional) |
 
-7. Deploy and confirm the service is healthy at your Render URL.
+7. **Attach a Render Persistent Disk** to the web service (recommended size: 1 GB or more). Mount it (for example at `/var/data`) and set `ORDER_UPLOAD_DIR` to a folder on that mount.
+
+8. Deploy and confirm the service is healthy at your Render URL.
 
 ### 3. Update Shopify app config
 
