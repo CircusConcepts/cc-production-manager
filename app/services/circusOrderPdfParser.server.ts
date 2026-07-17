@@ -13,6 +13,8 @@ export {
   groupTextItemsIntoLines,
   normalizeOrderNumberInput,
   normalizePdfText,
+  normalizeSkuCandidate,
+  isValidCircusSku,
   parseCircusOrderFromTextLines,
   type ParsedCircusOrderLine,
   type ParsedCircusOrderOption,

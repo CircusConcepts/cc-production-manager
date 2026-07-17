@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   Link,
+  data,
   redirect,
   useFetcher,
   useLoaderData,
@@ -15,6 +16,10 @@ import {
   readOrderPdfFromFormData,
   type OrderPdfPreview,
 } from "../services/circusOrderPdfImport.server";
+import {
+  logProductionOrderImport,
+  userFacingImportError,
+} from "../services/productionOrderImportLog.server";
 import { getOrCreateShop } from "../services/shop.server";
 import {
   compareDueDateAsc,
@@ -28,7 +33,13 @@ import { authenticate } from "../shopify.server";
 import "../styles/production-orders.css";
 
 type ParseActionResult = { error?: string; preview?: OrderPdfPreview };
-type CreateActionResult = { error?: string };
+
+function actionError(
+  error: string,
+  status = 400,
+): ReturnType<typeof data<ParseActionResult>> {
+  return data({ error }, { status });
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -77,47 +88,93 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "parseOrderPdf") {
     if (!pdfFile) {
-      return { error: "A PDF order file is required." } satisfies ParseActionResult;
-    }
-
-    const result = await previewOrderPdfImport({
-      shopId: shop.id,
-      manualOrderNumber,
-      pdfFile,
-    });
-
-    if (!result.ok) {
-      return { error: result.error } satisfies ParseActionResult;
-    }
-
-    return { preview: result.preview } satisfies ParseActionResult;
-  }
-
-  if (intent === "createOrderFromPdf") {
-    if (!pdfFile) {
-      return { error: "A PDF order file is required." } satisfies CreateActionResult;
+      return actionError("A PDF order file is required.", 400);
     }
 
     try {
-      const result = await createOrderPdfImport({
+      const result = await previewOrderPdfImport({
         shopId: shop.id,
+        shopDomain: session.shop,
         manualOrderNumber,
         pdfFile,
       });
 
       if (!result.ok) {
-        return { error: result.error } satisfies CreateActionResult;
+        return actionError(result.error, result.status ?? 422);
       }
 
-      return redirect(`/app/orders/${result.order.id}?imported=1`);
-    } catch {
-      return {
-        error: "Could not create the production order. Please try again.",
-      } satisfies CreateActionResult;
+      return { preview: result.preview } satisfies ParseActionResult;
+    } catch (error) {
+      logProductionOrderImport(
+        "[ProductionOrderImport]",
+        "Unhandled exception during parseOrderPdf.",
+        {
+          stage: "parseOrderPdf",
+          shopId: shop.id,
+          shopDomain: session.shop,
+          pdfFilename: pdfFile.name,
+          pdfByteSize: pdfFile.size,
+          orderNumber: manualOrderNumber,
+          error,
+        },
+      );
+      return actionError(
+        userFacingImportError(
+          "Could not read the order PDF. Please try again.",
+          {
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        ),
+        500,
+      );
     }
   }
 
-  return { error: "Unknown action." } satisfies ParseActionResult;
+  if (intent === "createOrderFromPdf") {
+    if (!pdfFile) {
+      return actionError("A PDF order file is required.", 400);
+    }
+
+    try {
+      const result = await createOrderPdfImport({
+        shopId: shop.id,
+        shopDomain: session.shop,
+        manualOrderNumber,
+        pdfFile,
+      });
+
+      if (!result.ok) {
+        return actionError(result.error, result.status ?? 422);
+      }
+
+      return redirect(`/app/orders/${result.order.id}?imported=1`);
+    } catch (error) {
+      logProductionOrderImport(
+        "[ProductionOrderImport]",
+        "Unhandled exception during createOrderFromPdf.",
+        {
+          stage: "createOrderFromPdf",
+          shopId: shop.id,
+          shopDomain: session.shop,
+          pdfFilename: pdfFile.name,
+          pdfByteSize: pdfFile.size,
+          orderNumber: manualOrderNumber,
+          error,
+        },
+      );
+      return actionError(
+        userFacingImportError(
+          "Could not create the production order. Please try again.",
+          {
+            detail: error instanceof Error ? error.message : String(error),
+          },
+        ),
+        500,
+      );
+    }
+  }
+
+  return actionError("Unknown action.", 400);
 };
 
 function OrderPdfPreviewPanel({

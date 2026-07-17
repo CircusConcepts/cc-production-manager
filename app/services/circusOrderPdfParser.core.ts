@@ -79,25 +79,72 @@ const NOISE_PATTERNS = [
   /^generated\b/i,
 ];
 
+const UNICODE_DASH_PATTERN = /[\u2010\u2011\u2012\u2013\u2014\u2212]/g;
+const ZERO_WIDTH_PATTERN = /[\u200b-\u200d\ufeff]/g;
+const SOFT_HYPHEN = /\u00ad/g;
+const SPECIAL_INVALID_CHARS = /[\ufffe\uffff]/g;
+
+/**
+ * General PDF text cleanup used for labels, addresses, and descriptions.
+ * Converts corrupted wrap markers and unicode dashes to ASCII hyphens.
+ */
 export function normalizePdfText(value: string): string {
-  const withoutControl = [...value]
+  const repaired = value
+    .replace(UNICODE_DASH_PATTERN, "-")
+    // PDF line-wrap corruption frequently emits U+FFFE / U+FFFF in place of '-'.
+    .replace(SPECIAL_INVALID_CHARS, "-")
+    .replace(SOFT_HYPHEN, "")
+    .replace(ZERO_WIDTH_PATTERN, "")
+    .replace(/\u00a0/g, " ");
+
+  const withoutControl = [...repaired]
     .filter((char) => {
       const code = char.charCodeAt(0);
       return code >= 0x20 && code !== 0x7f;
     })
     .join("");
 
-  return withoutControl
-    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g, "-")
-    .replace(/\u00ad/g, "")
-    .replace(/[\u200b-\u200d\ufeff]/g, "")
+  return withoutControl.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * SKU-specific normalization for Circus Concepts invoice PDF extraction.
+ * Treats U+FFFE / U+FFFF as corrupted line-wrap hyphens when they appear
+ * between SKU segments, then removes wrap whitespace.
+ */
+export function normalizeSkuCandidate(value: string): string {
+  let sku = value
+    .replace(UNICODE_DASH_PATTERN, "-")
+    .replace(SOFT_HYPHEN, "")
+    .replace(ZERO_WIDTH_PATTERN, "")
     .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(SPECIAL_INVALID_CHARS, "-");
+
+  sku = [...sku]
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("");
+
+  // PDF wrap can insert spaces inside a SKU; remove them after hyphen repair.
+  sku = sku.replace(/\s+/g, "");
+
+  // Collapse accidental double hyphens created by "-\uFFFE" or "- " repair.
+  sku = sku.replace(/-{2,}/g, "-");
+
+  // Trim leading/trailing hyphens introduced by repair.
+  sku = sku.replace(/^-+|-+$/g, "");
+
+  return sku;
+}
+
+export function isValidCircusSku(sku: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sku);
 }
 
 export function normalizeOrderNumberInput(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = normalizePdfText(value);
   if (trimmed.startsWith("#")) {
     return trimmed.slice(1).trim();
   }
@@ -330,8 +377,27 @@ function isTableHeaderLine(text: string): boolean {
 function extractSkuFromDescription(
   description: string,
 ): { ok: true; sku: string } | { ok: false; error: string } {
-  const compact = description.replace(/\s+/g, " ");
-  const matches = [...compact.matchAll(/\(\s*SKU\s*:\s*([^)]+)\)/gi)];
+  // Repair wrap/corruption characters before matching so a SKU fragment like
+  // "CC-HAND\uFFFE TRAINING-18-STD" still forms one capture group.
+  const skuAwareDescription = description
+    .replace(UNICODE_DASH_PATTERN, "-")
+    .replace(SOFT_HYPHEN, "")
+    .replace(ZERO_WIDTH_PATTERN, "")
+    .replace(SPECIAL_INVALID_CHARS, "-")
+    .replace(/\u00a0/g, " ");
+
+  const cleanedDescription = [...skuAwareDescription]
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const matches = [
+    ...cleanedDescription.matchAll(/\(\s*SKU\s*:\s*([^)]+)\)/gi),
+  ];
 
   if (matches.length === 0) {
     return { ok: false, error: "A product line is missing its SKU." };
@@ -343,11 +409,11 @@ function extractSkuFromDescription(
     };
   }
 
-  const sku = matches[0][1].replace(/\s+/g, "");
+  const sku = normalizeSkuCandidate(matches[0][1]);
   if (!sku) {
     return { ok: false, error: "A product line has an empty SKU." };
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sku)) {
+  if (!isValidCircusSku(sku)) {
     return { ok: false, error: "A product line contains a malformed SKU." };
   }
 

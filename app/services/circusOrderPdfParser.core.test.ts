@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildLinesFromLayout,
+  isValidCircusSku,
   normalizeOrderNumberInput,
+  normalizePdfText,
+  normalizeSkuCandidate,
   parseCircusOrderFromTextLines,
 } from "./circusOrderPdfParser.core";
 
@@ -170,6 +173,48 @@ describe("normalizeOrderNumberInput", () => {
   it("trims whitespace and removes an optional leading hash", () => {
     expect(normalizeOrderNumberInput("  #29086 ")).toBe("29086");
     expect(normalizeOrderNumberInput("29086")).toBe("29086");
+  });
+});
+
+describe("normalizeSkuCandidate and normalizePdfText", () => {
+  it("keeps a normal ASCII SKU unchanged", () => {
+    expect(normalizeSkuCandidate("CC-HAND-TRAINING-18-STD")).toBe(
+      "CC-HAND-TRAINING-18-STD",
+    );
+  });
+
+  it("repairs U+FFFE as a hyphen and removes wrap spaces", () => {
+    expect(normalizeSkuCandidate("CC-HAND\uFFFE TRAINING-18-STD")).toBe(
+      "CC-HAND-TRAINING-18-STD",
+    );
+  });
+
+  it("repairs U+FFFF as a hyphen", () => {
+    expect(normalizeSkuCandidate("CC-HAND\uFFFFTRAINING-18-STD")).toBe(
+      "CC-HAND-TRAINING-18-STD",
+    );
+  });
+
+  it("converts unicode dash variants to ASCII hyphens", () => {
+    expect(normalizeSkuCandidate("CC\u2013HAND\u2014TRAINING\u221218\u2010STD")).toBe(
+      "CC-HAND-TRAINING-18-STD",
+    );
+  });
+
+  it("removes soft hyphens and zero-width characters", () => {
+    expect(
+      normalizeSkuCandidate("CC-\u00adHAND\u200b-\u200cTRAINING\u200d-18\ufeff-STD"),
+    ).toBe("CC-HAND-TRAINING-18-STD");
+  });
+
+  it("still rejects invalid SKUs after normalization", () => {
+    expect(isValidCircusSku(normalizeSkuCandidate("BAD SKU!!"))).toBe(false);
+    expect(isValidCircusSku(normalizeSkuCandidate(""))).toBe(false);
+  });
+
+  it("does not invent product description content while cleaning text", () => {
+    expect(normalizePdfText("Hand Training  Canes")).toBe("Hand Training Canes");
+    expect(normalizePdfText("Montreal\u00a0QC")).toBe("Montreal QC");
   });
 });
 
@@ -492,5 +537,63 @@ describe("parseCircusOrderFromTextLines", () => {
         value: "18'' Training",
       },
     ]);
+  });
+
+  it("normalizes a SKU containing U+FFFE from PDF wrap corruption", () => {
+    const lines = buildSampleInvoiceLayout({
+      skuLines: [`( SKU : CC-HAND\uFFFE TRAINING-18-STD)`],
+    });
+
+    const result = parseCircusOrderFromTextLines(lines, {
+      manualOrderNumber: "29086",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.lines[0]?.sku).toBe("CC-HAND-TRAINING-18-STD");
+    expect(result.data.lines[0]?.quantity).toBe(1);
+    expect(result.data.orderNumber).toBe("29086");
+  });
+
+  it("joins wrapped SKU fragments when U+FFFE replaces the wrap hyphen", () => {
+    const lines = buildSampleInvoiceLayout({
+      skuLines: ["( SKU : CC-HAND\uFFFE", "TRAINING-18-STD)"],
+    });
+
+    const result = parseCircusOrderFromTextLines(lines, {
+      manualOrderNumber: "29086",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.lines[0]?.sku).toBe("CC-HAND-TRAINING-18-STD");
+  });
+
+  it("normalizes unicode dashes inside a SKU", () => {
+    const lines = buildSampleInvoiceLayout({
+      skuLines: ["( SKU : CC\u2013HAND\u2014TRAINING-18-STD)"],
+    });
+
+    const result = parseCircusOrderFromTextLines(lines, {
+      manualOrderNumber: "29086",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.lines[0]?.sku).toBe("CC-HAND-TRAINING-18-STD");
+  });
+
+  it("rejects a SKU that remains invalid after normalization", () => {
+    const lines = buildSampleInvoiceLayout({
+      skuLines: ["( SKU : !!!invalid!!!)"],
+    });
+
+    const result = parseCircusOrderFromTextLines(lines, {
+      manualOrderNumber: "29086",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.toLowerCase()).toContain("malformed sku");
   });
 });

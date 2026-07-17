@@ -1,6 +1,8 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { access, constants, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+
+import { logProductionOrderImport } from "./productionOrderImportLog.server";
 
 const DEFAULT_LOCAL_UPLOAD_DIR = "./storage/order-documents";
 
@@ -216,6 +218,12 @@ export function resolveOrderDocumentPath(storageKey: string): string {
   return absolutePath;
 }
 
+export async function ensureOrderUploadDirWritable(): Promise<void> {
+  const uploadDir = getOrderUploadDir();
+  await mkdir(uploadDir, { recursive: true });
+  await access(uploadDir, constants.W_OK);
+}
+
 export async function saveOrderDocument({
   shopId,
   productionOrderId,
@@ -227,6 +235,23 @@ export async function saveOrderDocument({
   file: File;
   extension: string;
 }): Promise<{ storageKey: string }> {
+  try {
+    await ensureOrderUploadDirWritable();
+  } catch (error) {
+    logProductionOrderImport(
+      "[ProductionOrderStorage]",
+      "Upload directory is missing or not writable.",
+      {
+        stage: "ensure_upload_dir",
+        shopId,
+        pdfFilename: file.name,
+        pdfByteSize: file.size,
+        error,
+      },
+    );
+    throw error;
+  }
+
   const storageKey = buildOrderDocumentStorageKey({
     shopId,
     productionOrderId,
